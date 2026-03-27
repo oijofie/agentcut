@@ -3,7 +3,13 @@
 import { useEffect, useRef } from "react";
 import { EditorCore } from "@/core";
 import { getElementsAtTime } from "@/lib/timeline";
-import type { TimelineTrack, TimelineElement } from "@/types/timeline";
+import { hasEffect, buildDefaultEffectInstance } from "@/lib/effects";
+import type {
+	TimelineTrack,
+	TimelineElement,
+	CreateEffectElement,
+} from "@/types/timeline";
+import type { EffectParamValues } from "@/types/effects";
 
 const WS_BRIDGE_URL = "ws://localhost:3001/ws?role=browser";
 
@@ -180,6 +186,58 @@ function handleCommand(cmd: WsCommand): WsResponse {
           editor.playback.toggle();
         }
         return { id: cmd.id, ok: true };
+      }
+
+      case "set_canvas_size": {
+        const width = params?.width as number;
+        const height = params?.height as number;
+        if (!width || !height) return { id: cmd.id, ok: false, error: "width and height are required" };
+        editor.project.updateSettings({
+          settings: { canvasSize: { width, height } },
+        });
+        return { id: cmd.id, ok: true, data: { canvasSize: { width, height } } };
+      }
+
+      case "add_effect": {
+        const effectType = params?.effectType as string;
+        if (!effectType) return { id: cmd.id, ok: false, error: "effectType is required" };
+        if (!hasEffect({ effectType })) {
+          return { id: cmd.id, ok: false, error: `Unknown effect type: ${effectType}` };
+        }
+
+        const elementId = params?.elementId as string | undefined;
+        const trackId = params?.trackId as string | undefined;
+        const customParams = params?.params as EffectParamValues | undefined;
+
+        if (elementId) {
+          if (!trackId) return { id: cmd.id, ok: false, error: "trackId is required when elementId is provided" };
+          const effectId = editor.timeline.addClipEffect({ trackId, elementId, effectType });
+          return { id: cmd.id, ok: true, data: { effectId, appliedTo: "element", elementId } };
+        }
+
+        const totalDuration = editor.timeline.getTotalDuration();
+        const defaultInstance = buildDefaultEffectInstance({ effectType });
+        const effectParams = customParams
+          ? { ...defaultInstance.params, ...customParams }
+          : defaultInstance.params;
+
+        const element: CreateEffectElement = {
+          type: "effect",
+          name: `${effectType} effect`,
+          effectType,
+          params: effectParams,
+          startTime: 0,
+          duration: totalDuration || 10,
+          trimStart: 0,
+          trimEnd: 0,
+        };
+
+        editor.timeline.insertElement({
+          element,
+          placement: { mode: "auto", trackType: "effect" },
+        });
+
+        return { id: cmd.id, ok: true, data: { appliedTo: "timeline", effectType } };
       }
 
       default:

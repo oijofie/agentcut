@@ -1,7 +1,8 @@
 import { hasEffect, registerEffect } from "../registry";
 import { blurEffectDefinition } from "./blur";
+import { letterboxEffectDefinition } from "./letterbox";
 
-const defaultEffects = [blurEffectDefinition];
+const defaultEffects = [blurEffectDefinition, letterboxEffectDefinition];
 
 export function registerDefaultEffects(): void {
 	for (const definition of defaultEffects) {

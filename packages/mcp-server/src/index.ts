@@ -193,6 +193,34 @@ server.tool(
   },
 );
 
+server.tool(
+  "add_effect",
+  "Add an effect to a specific element or as an effect layer on the timeline",
+  {
+    effectType: z.string().describe("Effect type (e.g. 'blur', 'letterbox')"),
+    elementId: z.string().optional().describe("Target element ID. If omitted, adds as effect layer covering the full timeline"),
+    trackId: z.string().optional().describe("Track ID of the target element (required when elementId is provided)"),
+    params: z.record(z.union([z.number(), z.string(), z.boolean()])).optional().describe("Effect parameters (e.g. { amount: 12, color: '#000000' })"),
+  },
+  async ({ effectType, elementId, trackId, params }) => {
+    const data = await sendCommand("add_effect", { effectType, elementId, trackId, params });
+    return { content: [{ type: "text", text: JSON.stringify(data) }] };
+  },
+);
+
+server.tool(
+  "set_canvas_size",
+  "Change the project canvas size (e.g. 1080x1920 for vertical 9:16, 1920x1080 for horizontal 16:9)",
+  {
+    width: z.number().describe("Canvas width in pixels"),
+    height: z.number().describe("Canvas height in pixels"),
+  },
+  async ({ width, height }) => {
+    const data = await sendCommand("set_canvas_size", { width, height });
+    return { content: [{ type: "text", text: JSON.stringify(data) }] };
+  },
+);
+
 // --- Start ---
 
 async function main() {
