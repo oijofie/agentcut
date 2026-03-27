@@ -221,6 +221,25 @@ server.tool(
   },
 );
 
+server.tool(
+  "add_text",
+  "Add a text element to the timeline. Use position 'top'/'bottom' to place text on letterbox bar area.",
+  {
+    content: z.string().describe("Text content to display"),
+    position: z.enum(["center", "top", "bottom"]).optional().describe("Preset position. 'top'/'bottom' places text on letterbox bar area. Default: center"),
+    x: z.number().optional().describe("X offset from center in pixels (overrides position preset for X)"),
+    y: z.number().optional().describe("Y offset from center in pixels (overrides position preset for Y)"),
+    fontSize: z.number().optional().describe("Font size (default: 15, scaled by canvas height)"),
+    color: z.string().optional().describe("Text color hex (default: #ffffff)"),
+    startTime: z.number().optional().describe("Start time on timeline in seconds (default: 0)"),
+    duration: z.number().optional().describe("Duration in seconds (default: full timeline duration)"),
+  },
+  async ({ content, position, x, y, fontSize, color, startTime, duration }) => {
+    const data = await sendCommand("add_text", { content, position, x, y, fontSize, color, startTime, duration });
+    return { content: [{ type: "text", text: JSON.stringify(data) }] };
+  },
+);
+
 // --- Start ---
 
 async function main() {

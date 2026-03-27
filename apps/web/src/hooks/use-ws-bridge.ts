@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { EditorCore } from "@/core";
-import { getElementsAtTime } from "@/lib/timeline";
+import { getElementsAtTime, buildTextElement } from "@/lib/timeline";
 import { hasEffect, buildDefaultEffectInstance } from "@/lib/effects";
 import type {
 	TimelineTrack,
@@ -238,6 +238,49 @@ function handleCommand(cmd: WsCommand): WsResponse {
         });
 
         return { id: cmd.id, ok: true, data: { appliedTo: "timeline", effectType } };
+      }
+
+      case "add_text": {
+        const content = params?.content as string;
+        if (!content) return { id: cmd.id, ok: false, error: "content is required" };
+
+        const activeProject = editor.project.getActive();
+        const canvasH = activeProject.settings.canvasSize.height;
+        const totalDuration = editor.timeline.getTotalDuration();
+        const positionPreset = params?.position as "center" | "top" | "bottom" | undefined;
+        const letterboxAmount = 0.12;
+
+        let posY = 0;
+        if (positionPreset === "top") {
+          posY = -(canvasH / 2) + (canvasH * letterboxAmount / 2);
+        } else if (positionPreset === "bottom") {
+          posY = (canvasH / 2) - (canvasH * letterboxAmount / 2);
+        }
+
+        const textElement = buildTextElement({
+          raw: {
+            content,
+            fontSize: (params?.fontSize as number) ?? 8,
+            color: (params?.color as string) ?? "#ffffff",
+            transform: {
+              scale: 1,
+              position: {
+                x: (params?.x as number) ?? 0,
+                y: (params?.y as number) ?? posY,
+              },
+              rotate: 0,
+            },
+            duration: (params?.duration as number) ?? (totalDuration || 10),
+          },
+          startTime: (params?.startTime as number) ?? 0,
+        });
+
+        editor.timeline.insertElement({
+          element: textElement,
+          placement: { mode: "auto", trackType: "text" },
+        });
+
+        return { id: cmd.id, ok: true, data: { content, position: positionPreset ?? "center" } };
       }
 
       default:
