@@ -2,6 +2,28 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import WebSocket from "ws";
+import OpenAI from "openai";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Load .env from packages/mcp-server/.env
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const envPath = resolve(__dirname, "../.env");
+try {
+  const envContent = readFileSync(envPath, "utf-8");
+  for (const line of envContent.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eqIdx = trimmed.indexOf("=");
+    if (eqIdx === -1) continue;
+    const key = trimmed.slice(0, eqIdx).trim();
+    const value = trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, "");
+    if (!process.env[key]) process.env[key] = value;
+  }
+} catch {
+  // .env file is optional
+}
 
 const WS_BRIDGE_URL = "ws://localhost:3001/ws?role=mcp";
 
@@ -59,7 +81,7 @@ function connectWs(): Promise<void> {
   });
 }
 
-async function sendCommand(type: string, params?: Record<string, unknown>): Promise<unknown> {
+async function sendCommand(type: string, params?: Record<string, unknown>, timeoutMs = 10000): Promise<unknown> {
   await connectWs();
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     throw new Error("Not connected to ws-bridge. Is OpenCut running?");
@@ -69,8 +91,8 @@ async function sendCommand(type: string, params?: Record<string, unknown>): Prom
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       pendingRequests.delete(id);
-      reject(new Error("Command timed out (10s)"));
-    }, 10000);
+      reject(new Error(`Command timed out (${timeoutMs / 1000}s)`));
+    }, timeoutMs);
 
     pendingRequests.set(id, {
       resolve: (data) => {
@@ -237,6 +259,51 @@ server.tool(
   async ({ content, position, x, y, fontSize, color, startTime, duration }) => {
     const data = await sendCommand("add_text", { content, position, x, y, fontSize, color, startTime, duration });
     return { content: [{ type: "text", text: JSON.stringify(data) }] };
+  },
+);
+
+server.tool(
+  "transcribe",
+  "Transcribe the timeline audio using OpenAI Whisper API. Returns word-level timestamps.",
+  {
+    language: z.string().optional().describe("Language code (e.g. 'ja', 'en'). Auto-detected if omitted."),
+  },
+  async ({ language }) => {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return { content: [{ type: "text", text: "Error: OPENAI_API_KEY environment variable is not set" }] };
+    }
+
+    // Extract audio from browser (60s timeout for long timelines)
+    const result = await sendCommand("extract_audio", {}, 60000) as { audio: string; duration: number };
+
+    // Decode base64 WAV
+    const wavBuffer = Buffer.from(result.audio, "base64");
+    const wavFile = new File([wavBuffer], "audio.wav", { type: "audio/wav" });
+
+    // Call Whisper API
+    const openai = new OpenAI({ apiKey });
+    const transcription = await openai.audio.transcriptions.create({
+      file: wavFile,
+      model: "whisper-1",
+      response_format: "verbose_json",
+      timestamp_granularities: ["word"],
+      ...(language ? { language } : {}),
+    });
+
+    const words = (transcription as unknown as { words?: Array<{ word: string; start: number; end: number }> }).words ?? [];
+
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          text: transcription.text,
+          language: transcription.language,
+          duration: result.duration,
+          words,
+        }, null, 2),
+      }],
+    };
   },
 );
 

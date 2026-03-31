@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { EditorCore } from "@/core";
 import { getElementsAtTime, buildTextElement } from "@/lib/timeline";
 import { hasEffect, buildDefaultEffectInstance } from "@/lib/effects";
+import { extractTimelineAudio } from "@/lib/media/mediabunny";
 import type {
 	TimelineTrack,
 	TimelineElement,
@@ -44,7 +45,7 @@ function serializeTrack(track: TimelineTrack) {
   };
 }
 
-function handleCommand(cmd: WsCommand): WsResponse {
+async function handleCommand(cmd: WsCommand): Promise<WsResponse> {
   try {
     const editor = EditorCore.getInstance();
     const { type, params } = cmd;
@@ -283,6 +284,36 @@ function handleCommand(cmd: WsCommand): WsResponse {
         return { id: cmd.id, ok: true, data: { content, position: positionPreset ?? "center" } };
       }
 
+      case "extract_audio": {
+        const tracks = editor.timeline.getTracks();
+        const mediaAssets = editor.media.getAssets();
+        const totalDuration = editor.timeline.getTotalDuration();
+
+        if (totalDuration === 0) {
+          return { id: cmd.id, ok: false, error: "Timeline is empty" };
+        }
+
+        const audioBlob = await extractTimelineAudio({
+          tracks,
+          mediaAssets,
+          totalDuration,
+        });
+
+        const arrayBuffer = await audioBlob.arrayBuffer();
+        const bytes = new Uint8Array(arrayBuffer);
+        let binary = "";
+        for (let i = 0; i < bytes.length; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        const base64 = btoa(binary);
+
+        return {
+          id: cmd.id,
+          ok: true,
+          data: { audio: base64, duration: totalDuration },
+        };
+      }
+
       default:
         return { id: cmd.id, ok: false, error: `Unknown command: ${type}` };
     }
@@ -303,10 +334,10 @@ export function useWsBridge() {
         console.log("[ws-bridge] connected to bridge server");
       };
 
-      ws.onmessage = (event) => {
+      ws.onmessage = async (event) => {
         try {
-          const cmd = JSON.parse(event.data) as WsCommand;
-          const response = handleCommand(cmd);
+          const cmd = JSON.parse(event.data as string) as WsCommand;
+          const response = await handleCommand(cmd);
           ws.send(JSON.stringify(response));
         } catch (e) {
           console.error("[ws-bridge] failed to handle message:", e);
