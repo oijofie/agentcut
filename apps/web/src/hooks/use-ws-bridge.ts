@@ -284,6 +284,45 @@ async function handleCommand(cmd: WsCommand): Promise<WsResponse> {
         return { id: cmd.id, ok: true, data: { content, position: positionPreset ?? "center" } };
       }
 
+      case "extract_video": {
+        const totalDuration = editor.timeline.getTotalDuration();
+        if (totalDuration === 0) {
+          return { id: cmd.id, ok: false, error: "Timeline is empty" };
+        }
+
+        const result = await editor.renderer.exportProject({
+          options: {
+            format: "mp4",
+            quality: "medium",
+            includeAudio: false,
+          },
+        });
+
+        if (!result.success || !result.buffer) {
+          return {
+            id: cmd.id,
+            ok: false,
+            error: result.error ?? "Export failed",
+          };
+        }
+
+        const videoBytes = new Uint8Array(result.buffer);
+        let videoBinary = "";
+        for (let i = 0; i < videoBytes.length; i++) {
+          videoBinary += String.fromCharCode(videoBytes[i]);
+        }
+        const videoBase64 = btoa(videoBinary);
+
+        return {
+          id: cmd.id,
+          ok: true,
+          data: {
+            video: videoBase64,
+            duration: totalDuration,
+          },
+        };
+      }
+
       case "extract_audio": {
         const tracks = editor.timeline.getTracks();
         const mediaAssets = editor.media.getAssets();

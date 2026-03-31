@@ -3,8 +3,10 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import WebSocket from "ws";
 import OpenAI from "openai";
-import { readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { readFileSync, writeFileSync, unlinkSync, mkdtempSync, existsSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { resolve, dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 // Load .env from packages/mcp-server/.env
@@ -26,6 +28,18 @@ try {
 }
 
 const WS_BRIDGE_URL = "ws://localhost:3001/ws?role=mcp";
+
+// Resolve ffmpeg/ffprobe paths (homebrew may not be in MCP server PATH)
+const FFMPEG_CANDIDATES = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"];
+function findBin(name: string): string {
+  for (const dir of FFMPEG_CANDIDATES) {
+    const p = join(dir, name);
+    if (existsSync(p)) return p;
+  }
+  return name;
+}
+const FFMPEG = findBin("ffmpeg");
+const FFPROBE = findBin("ffprobe");
 
 // --- WebSocket Bridge Client ---
 
@@ -299,6 +313,116 @@ server.tool(
         }, null, 2),
       }],
     };
+  },
+);
+
+server.tool(
+  "detect_scenes",
+  "Detect scene changes using ffmpeg scdet filter. Can analyze a local file (file_path) or the current timeline.",
+  {
+    threshold: z.number().min(0).max(100).optional().describe(
+      "Scene change detection sensitivity (0-100). Lower = more sensitive. Default: 10",
+    ),
+    file_path: z.string().optional().describe(
+      "Absolute path to a local video file. If omitted, exports and analyzes the current timeline.",
+    ),
+  },
+  async ({ threshold, file_path }) => {
+    const t = threshold ?? 10;
+
+    let inputFile: string;
+    let tmpDir: string | null = null;
+    let duration: number;
+
+    if (file_path) {
+      // Use local file directly
+      if (!existsSync(file_path)) {
+        return {
+          content: [{
+            type: "text",
+            text: `File not found: ${file_path}`,
+          }],
+          isError: true,
+        };
+      }
+      inputFile = file_path;
+
+      // Get duration via ffprobe
+      duration = await new Promise<number>((resolve, reject) => {
+        execFile(
+          FFPROBE,
+          ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file_path],
+          (err, stdout) => {
+            if (err) reject(new Error(`ffprobe failed: ${err.message}`));
+            else resolve(Number.parseFloat(stdout.trim()) || 0);
+          },
+        );
+      });
+    } else {
+      // Export timeline video from browser
+      const result = await sendCommand("extract_video", {}, 300000) as {
+        video: string;
+        duration: number;
+      };
+      duration = result.duration;
+      tmpDir = mkdtempSync(join(tmpdir(), "opencut-"));
+      inputFile = join(tmpDir, "input.mp4");
+      writeFileSync(inputFile, Buffer.from(result.video, "base64"));
+    }
+
+    try {
+      // Run ffmpeg scdet
+      const stderr = await new Promise<string>((resolve, reject) => {
+        execFile(
+          FFMPEG,
+          ["-hide_banner", "-i", inputFile, "-vf", `scdet=t=${t}:sc_pass=1`, "-f", "null", "-"],
+          { maxBuffer: 10 * 1024 * 1024 },
+          (err, _stdout, stderr) => {
+            if (err && !stderr) {
+              reject(new Error(`ffmpeg failed: ${err.message}`));
+            } else {
+              resolve(stderr);
+            }
+          },
+        );
+      });
+
+      // Parse scene timestamps
+      const boundaries: number[] = [];
+      const regex = /lavfi\.scd\.time:\s*([\d.]+)/g;
+      let match: RegExpExecArray | null;
+      while ((match = regex.exec(stderr)) !== null) {
+        boundaries.push(Number.parseFloat(match[1]));
+      }
+
+      // Convert boundaries to cuts
+      const cuts: Array<{ start: number; end: number }> = [];
+      let prev = 0;
+      for (const boundary of boundaries) {
+        cuts.push({ start: prev, end: boundary });
+        prev = boundary;
+      }
+      if (prev < duration) {
+        cuts.push({ start: prev, end: duration });
+      }
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            cuts,
+            threshold: t,
+            count: cuts.length,
+            duration,
+          }, null, 2),
+        }],
+      };
+    } finally {
+      if (tmpDir) {
+        try { unlinkSync(join(tmpDir, "input.mp4")); } catch {}
+        try { unlinkSync(tmpDir); } catch {}
+      }
+    }
   },
 );
 
