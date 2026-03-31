@@ -119,7 +119,6 @@ const server = new McpServer({
 server.tool(
   "get_timeline",
   "Get the current timeline state including tracks, elements, playback position",
-  {},
   async () => {
     const data = await sendCommand("get_timeline");
     return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
@@ -168,7 +167,6 @@ server.tool(
 server.tool(
   "undo",
   "Undo the last editing operation",
-  {},
   async () => {
     const data = await sendCommand("undo");
     return { content: [{ type: "text", text: JSON.stringify(data) }] };
@@ -178,7 +176,6 @@ server.tool(
 server.tool(
   "redo",
   "Redo the last undone operation",
-  {},
   async () => {
     const data = await sendCommand("redo");
     return { content: [{ type: "text", text: JSON.stringify(data) }] };
@@ -198,7 +195,6 @@ server.tool(
 server.tool(
   "play",
   "Start playback",
-  {},
   async () => {
     const data = await sendCommand("play");
     return { content: [{ type: "text", text: JSON.stringify(data) }] };
@@ -208,7 +204,6 @@ server.tool(
 server.tool(
   "pause",
   "Pause playback",
-  {},
   async () => {
     const data = await sendCommand("pause");
     return { content: [{ type: "text", text: JSON.stringify(data) }] };
@@ -222,7 +217,7 @@ server.tool(
     effectType: z.string().describe("Effect type (e.g. 'blur', 'letterbox')"),
     elementId: z.string().optional().describe("Target element ID. If omitted, adds as effect layer covering the full timeline"),
     trackId: z.string().optional().describe("Track ID of the target element (required when elementId is provided)"),
-    params: z.record(z.union([z.number(), z.string(), z.boolean()])).optional().describe("Effect parameters (e.g. { amount: 12, color: '#000000' })"),
+    params: z.record(z.string(), z.number().or(z.string()).or(z.boolean())).optional().describe("Effect parameters (e.g. { amount: 12, color: '#000000' })"),
   },
   async ({ effectType, elementId, trackId, params }) => {
     const data = await sendCommand("add_effect", { effectType, elementId, trackId, params });
@@ -275,7 +270,7 @@ server.tool(
     }
 
     // Extract audio from browser (60s timeout for long timelines)
-    const result = await sendCommand("extract_audio", {}, 60000) as { audio: string; duration: number };
+    const result = await sendCommand("extract_audio", {}, 180000) as { audio: string; duration: number };
 
     // Decode base64 WAV
     const wavBuffer = Buffer.from(result.audio, "base64");
