@@ -3,7 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import WebSocket from "ws";
 import OpenAI from "openai";
-import { readFileSync, writeFileSync, unlinkSync, mkdtempSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync, mkdtempSync, mkdirSync, existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { resolve, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -544,6 +544,142 @@ server.tool(
       return { content: [{ type: "text", text: `No labels found for media ${mediaId}` }] };
     }
     return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  },
+);
+
+function formatTime(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+server.tool(
+  "generate_scene_md",
+  "Generate per-scene markdown files from saved video labels. Creates one MD file per scene plus an index file.",
+  {
+    mediaId: z.string().describe("ID of the media asset"),
+    outputDir: z.string().describe("Absolute path to output directory"),
+  },
+  async ({ mediaId, outputDir }) => {
+    // Get labels from browser
+    const result = await sendCommand("get_video_labels", { mediaId }) as {
+      id?: string;
+      mediaId?: string;
+      version?: number;
+      global?: {
+        duration: number;
+        resolution: string;
+        fps: number;
+        summary: string;
+        overallTone: string;
+        speakers: string[];
+      };
+      scenes?: Array<{
+        startTime: number;
+        endTime: number;
+        description: string;
+        category?: string;
+        score?: number;
+        speechContent?: string;
+        speaker?: string;
+        isHighlight?: boolean;
+      }>;
+    } | null;
+
+    if (!result?.scenes || result.scenes.length === 0) {
+      return {
+        content: [{ type: "text", text: `No labels found for media ${mediaId}. Run labeling first.` }],
+        isError: true,
+      };
+    }
+
+    // Create output directory
+    if (!existsSync(outputDir)) {
+      mkdirSync(outputDir, { recursive: true });
+    }
+
+    const { global, scenes } = result;
+    const files: string[] = [];
+
+    // Generate per-scene MD files
+    for (let i = 0; i < scenes.length; i++) {
+      const scene = scenes[i];
+      const num = String(i + 1).padStart(2, "0");
+      const filename = `scene_${num}.md`;
+      const filepath = join(outputDir, filename);
+
+      const lines = [
+        `# Scene ${num}: ${scene.category || "No Category"}`,
+        "",
+        `## Time`,
+        `- **Start:** ${formatTime(scene.startTime)}`,
+        `- **End:** ${formatTime(scene.endTime)}`,
+        `- **Duration:** ${Math.round(scene.endTime - scene.startTime)}s`,
+        "",
+        `## Description`,
+        scene.description,
+        "",
+      ];
+
+      if (scene.speechContent) {
+        lines.push(`## Speech Content`, scene.speechContent, "");
+      }
+      if (scene.speaker) {
+        lines.push(`## Speaker`, scene.speaker, "");
+      }
+
+      lines.push(
+        `## Metadata`,
+        `- **Score:** ${scene.score ?? "-"}/10`,
+        `- **Highlight:** ${scene.isHighlight ? "Yes" : "No"}`,
+        "",
+      );
+
+      writeFileSync(filepath, lines.join("\n"));
+      files.push(filename);
+    }
+
+    // Generate index MD
+    const indexLines = [
+      `# Video Analysis: ${global?.summary || mediaId}`,
+      "",
+      `## Overview`,
+      `- **Duration:** ${global ? formatTime(global.duration) : "-"}`,
+      `- **Resolution:** ${global?.resolution || "-"}`,
+      `- **FPS:** ${global?.fps || "-"}`,
+      `- **Tone:** ${global?.overallTone || "-"}`,
+      `- **Speakers:** ${global?.speakers?.length ? global.speakers.join(", ") : "N/A"}`,
+      "",
+      `## Scenes`,
+      "",
+    ];
+
+    for (let i = 0; i < scenes.length; i++) {
+      const scene = scenes[i];
+      const num = String(i + 1).padStart(2, "0");
+      const highlight = scene.isHighlight ? " ★" : "";
+      indexLines.push(
+        `### [Scene ${num}](scene_${num}.md)${highlight}`,
+        `- **${formatTime(scene.startTime)} - ${formatTime(scene.endTime)}** | ${scene.category || "-"} | Score: ${scene.score ?? "-"}/10`,
+        `- ${scene.description}`,
+        "",
+      );
+    }
+
+    writeFileSync(join(outputDir, "index.md"), indexLines.join("\n"));
+    files.push("index.md");
+
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          outputDir,
+          files,
+          sceneCount: scenes.length,
+        }, null, 2),
+      }],
+    };
   },
 );
 
