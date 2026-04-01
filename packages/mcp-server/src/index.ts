@@ -462,37 +462,71 @@ server.tool(
 );
 
 server.tool(
+  "transcribe_video",
+  "Transcribe the timeline audio using Whisper. Returns text with timestamped segments.",
+  {
+    language: z
+      .enum(["auto", "en", "es", "it", "fr", "de", "pt", "ru", "ja", "zh"])
+      .optional()
+      .describe("Language for transcription (default: auto-detect)"),
+    model: z
+      .enum([
+        "whisper-tiny",
+        "whisper-small",
+        "whisper-medium",
+        "whisper-large-v3-turbo",
+      ])
+      .optional()
+      .describe("Whisper model to use (default: whisper-small)"),
+  },
+  async ({ language, model }) => {
+    const data = await sendCommand(
+      "transcribe_video",
+      { language, model },
+      300000,
+    );
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  },
+);
+
+server.tool(
   "save_video_labels",
   "Save AI-generated labels (metadata) for a video. Labels include scene-level descriptions, audio type, energy level, etc.",
   {
-    mediaId: z.string().describe("ID of the media asset"),
-    labels: z.object({
-      version: z.number().describe("Label schema version"),
-      createdAt: z.string().describe("ISO timestamp"),
-      global: z.object({
-        duration: z.number(),
-        resolution: z.string(),
-        fps: z.number(),
-        summary: z.string(),
-        overallTone: z.string(),
-        speakers: z.array(z.string()),
-      }).describe("Global video metadata"),
-      scenes: z.array(z.object({
-        startTime: z.number(),
-        endTime: z.number(),
-        description: z.string(),
-        audioType: z.enum(["speech", "music", "silence", "noise", "mixed"]),
-        speechContent: z.string().optional(),
-        speaker: z.string().optional(),
-        visualQuality: z.enum(["good", "fair", "poor"]),
-        cameraMovement: z.enum(["static", "pan", "zoom", "handheld"]),
-        energyLevel: z.number().min(1).max(5),
-        isHighlight: z.boolean(),
-      })).describe("Per-scene labels"),
-    }).describe("Video labels object"),
+    labels: z
+      .object({
+        mediaId: z.string().describe("ID of the media asset"),
+        version: z.number().describe("Label schema version"),
+        createdAt: z.string().describe("ISO timestamp"),
+        global: z.object({
+          duration: z.number(),
+          resolution: z.string(),
+          fps: z.number(),
+          summary: z.string(),
+          overallTone: z.string(),
+          speakers: z.array(z.string()),
+        }).describe("Global video metadata"),
+        scenes: z.array(z.object({
+          startTime: z.number(),
+          endTime: z.number(),
+          description: z.string(),
+          category: z.string().optional(),
+          score: z.number().optional(),
+          audioType: z.enum(["speech", "music", "silence", "noise", "mixed"]).optional(),
+          speechContent: z.string().optional(),
+          speaker: z.string().optional(),
+          visualQuality: z.enum(["good", "fair", "poor"]).optional(),
+          cameraMovement: z.enum(["static", "pan", "zoom", "handheld"]).optional(),
+          energyLevel: z.number().min(1).max(5).optional(),
+          isHighlight: z.boolean(),
+        })).describe("Per-scene labels"),
+      })
+      .describe("The VideoLabels object to save"),
   },
-  async ({ mediaId, labels }) => {
-    const data = await sendCommand("save_video_labels", { mediaId, labels });
+  async ({ labels }) => {
+    const data = await sendCommand("save_video_labels", {
+      labels,
+    });
     return { content: [{ type: "text", text: JSON.stringify(data) }] };
   },
 );
@@ -504,11 +538,11 @@ server.tool(
     mediaId: z.string().describe("ID of the media asset"),
   },
   async ({ mediaId }) => {
-    const data = await sendCommand("get_video_labels", { mediaId }) as { labels: unknown };
-    if (!data.labels) {
+    const data = await sendCommand("get_video_labels", { mediaId });
+    if (!data) {
       return { content: [{ type: "text", text: `No labels found for media ${mediaId}` }] };
     }
-    return { content: [{ type: "text", text: JSON.stringify(data.labels, null, 2) }] };
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
   },
 );
 

@@ -78,6 +78,7 @@ export interface StorageConfig {
 	mediaDb: string;
 	savedSoundsDb: string;
 	videoLabelsDb: string;
+	labelsDb: string;
 	version: number;
 }
 

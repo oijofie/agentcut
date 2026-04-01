@@ -1,6 +1,7 @@
 import type { TProject, TProjectMetadata } from "@/types/project";
 import { getProjectDurationFromScenes } from "@/lib/scenes";
 import type { MediaAsset } from "@/types/assets";
+import type { VideoLabels } from "@/types/video-labels";
 import { IndexedDBAdapter } from "./indexeddb-adapter";
 import { OPFSAdapter } from "./opfs-adapter";
 import type {
@@ -53,6 +54,7 @@ class StorageService {
 			mediaDb: "video-editor-media",
 			savedSoundsDb: "video-editor-saved-sounds",
 			videoLabelsDb: "video-editor-video-labels",
+			labelsDb: "video-editor-labels",
 			version: 1,
 		};
 
@@ -484,20 +486,34 @@ class StorageService {
 		}
 	}
 
-	async saveVideoLabels({
-		labels,
-	}: {
-		labels: VideoLabelsData;
-	}): Promise<void> {
-		await this.videoLabelsAdapter.set(labels.mediaId, labels);
+	private getLabelsAdapter({ projectId }: { projectId: string }) {
+		return new IndexedDBAdapter<VideoLabels>(
+			`${this.config.labelsDb}-${projectId}`,
+			"labels",
+			this.config.version,
+		);
 	}
 
-	async getVideoLabels({
+	async saveVideoLabels({
+		projectId,
+		labels,
+	}: {
+		projectId: string;
+		labels: VideoLabels;
+	}): Promise<void> {
+		const adapter = this.getLabelsAdapter({ projectId });
+		await adapter.set(labels.mediaId, labels);
+	}
+
+	async loadVideoLabels({
+		projectId,
 		mediaId,
 	}: {
+		projectId: string;
 		mediaId: string;
-	}): Promise<VideoLabelsData | null> {
-		return await this.videoLabelsAdapter.get(mediaId);
+	}): Promise<VideoLabels | null> {
+		const adapter = this.getLabelsAdapter({ projectId });
+		return adapter.get(mediaId);
 	}
 
 	isOPFSSupported(): boolean {

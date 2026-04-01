@@ -7,6 +7,8 @@ import { hasEffect, buildDefaultEffectInstance } from "@/lib/effects";
 import { extractTimelineAudio } from "@/lib/media/mediabunny";
 import { storageService } from "@/services/storage/service";
 import type { VideoLabelsData } from "@/services/storage/types";
+import type { VideoLabels } from "@/types/video-labels";
+import type { TranscriptionLanguage } from "@/types/transcription";
 import type {
 	TimelineTrack,
 	TimelineElement,
@@ -88,6 +90,7 @@ async function extractVideoFrames({
     });
   });
 }
+
 
 async function handleCommand(cmd: WsCommand): Promise<WsResponse> {
   try {
@@ -425,21 +428,72 @@ async function handleCommand(cmd: WsCommand): Promise<WsResponse> {
         return { id: cmd.id, ok: true, data: { frames, mediaId, interval } };
       }
 
-      case "save_video_labels": {
-        const mediaId = params?.mediaId as string;
-        const labels = params?.labels as VideoLabelsData | undefined;
-        if (!mediaId || !labels) {
-          return { id: cmd.id, ok: false, error: "mediaId and labels are required" };
+      case "transcribe_video": {
+        const language = (params?.language as TranscriptionLanguage) ?? "auto";
+
+        const audioBlob = await extractTimelineAudio({
+          tracks: editor.timeline.getTracks(),
+          mediaAssets: editor.media.getAssets(),
+          totalDuration: editor.timeline.getTotalDuration(),
+        });
+
+        const formData = new FormData();
+        formData.append("file", audioBlob, "audio.wav");
+        if (language !== "auto") {
+          formData.append("language", language);
         }
-        await storageService.saveVideoLabels({ labels: { ...labels, mediaId } });
-        return { id: cmd.id, ok: true, data: { mediaId } };
+
+        const response = await fetch("/api/transcribe", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          return {
+            id: cmd.id,
+            ok: false,
+            error:
+              (errorData as { error?: string }).error ??
+              `Transcription failed (${response.status})`,
+          };
+        }
+
+        const result = (await response.json()) as {
+          text: string;
+          segments: { text: string; start: number; end: number }[];
+          language: string;
+        };
+
+        return {
+          id: cmd.id,
+          ok: true,
+          data: {
+            text: result.text,
+            segments: result.segments,
+            language: result.language,
+          },
+        };
+      }
+
+      case "save_video_labels": {
+        const labels = params?.labels as VideoLabels;
+        if (!labels?.mediaId) {
+          return { id: cmd.id, ok: false, error: "labels with mediaId required" };
+        }
+        const projectId = editor.project.getActive().metadata.id;
+        await storageService.saveVideoLabels({ projectId, labels });
+        return { id: cmd.id, ok: true, data: { mediaId: labels.mediaId } };
       }
 
       case "get_video_labels": {
         const mediaId = params?.mediaId as string;
-        if (!mediaId) return { id: cmd.id, ok: false, error: "mediaId is required" };
-        const labels = await storageService.getVideoLabels({ mediaId });
-        return { id: cmd.id, ok: true, data: { labels } };
+        if (!mediaId) {
+          return { id: cmd.id, ok: false, error: "mediaId is required" };
+        }
+        const projectId = editor.project.getActive().metadata.id;
+        const labels = await storageService.loadVideoLabels({ projectId, mediaId });
+        return { id: cmd.id, ok: true, data: labels };
       }
 
       default:
