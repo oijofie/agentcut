@@ -5,6 +5,8 @@ import { EditorCore } from "@/core";
 import { getElementsAtTime, buildTextElement } from "@/lib/timeline";
 import { hasEffect, buildDefaultEffectInstance } from "@/lib/effects";
 import { extractTimelineAudio } from "@/lib/media/mediabunny";
+import { storageService } from "@/services/storage/service";
+import type { VideoLabelsData } from "@/services/storage/types";
 import type {
 	TimelineTrack,
 	TimelineElement,
@@ -43,6 +45,48 @@ function serializeTrack(track: TimelineTrack) {
       sourceDuration: el.sourceDuration,
     })),
   };
+}
+
+async function extractVideoFrames({
+  url,
+  interval,
+}: {
+  url: string;
+  interval: number;
+}): Promise<Array<{ time: number; image: string }>> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    video.crossOrigin = "anonymous";
+    video.preload = "auto";
+    video.muted = true;
+    video.src = url;
+
+    video.addEventListener("loadedmetadata", async () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext("2d")!;
+      const duration = video.duration;
+      const frames: Array<{ time: number; image: string }> = [];
+
+      for (let t = 0; t < duration; t += interval) {
+        video.currentTime = t;
+        await new Promise<void>((res) => {
+          video.addEventListener("seeked", () => res(), { once: true });
+        });
+        ctx.drawImage(video, 0, 0);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+        const base64 = dataUrl.split(",")[1];
+        frames.push({ time: t, image: base64 });
+      }
+
+      resolve(frames);
+    });
+
+    video.addEventListener("error", () => {
+      reject(new Error("Failed to load video for frame extraction"));
+    });
+  });
 }
 
 async function handleCommand(cmd: WsCommand): Promise<WsResponse> {
@@ -351,6 +395,51 @@ async function handleCommand(cmd: WsCommand): Promise<WsResponse> {
           ok: true,
           data: { audio: base64, duration: totalDuration },
         };
+      }
+
+      case "list_media": {
+        const assets = editor.media.getAssets();
+        const serialized = assets.map((a) => ({
+          id: a.id,
+          name: a.name,
+          type: a.type,
+          width: a.width,
+          height: a.height,
+          duration: a.duration,
+        }));
+        return { id: cmd.id, ok: true, data: { assets: serialized } };
+      }
+
+      case "get_video_frames": {
+        const mediaId = params?.mediaId as string;
+        const interval = (params?.interval as number) ?? 5;
+        if (!mediaId) return { id: cmd.id, ok: false, error: "mediaId is required" };
+
+        const assets = editor.media.getAssets();
+        const asset = assets.find((a) => a.id === mediaId);
+        if (!asset || !asset.url) {
+          return { id: cmd.id, ok: false, error: `Media not found: ${mediaId}` };
+        }
+
+        const frames = await extractVideoFrames({ url: asset.url, interval });
+        return { id: cmd.id, ok: true, data: { frames, mediaId, interval } };
+      }
+
+      case "save_video_labels": {
+        const mediaId = params?.mediaId as string;
+        const labels = params?.labels as VideoLabelsData | undefined;
+        if (!mediaId || !labels) {
+          return { id: cmd.id, ok: false, error: "mediaId and labels are required" };
+        }
+        await storageService.saveVideoLabels({ labels: { ...labels, mediaId } });
+        return { id: cmd.id, ok: true, data: { mediaId } };
+      }
+
+      case "get_video_labels": {
+        const mediaId = params?.mediaId as string;
+        if (!mediaId) return { id: cmd.id, ok: false, error: "mediaId is required" };
+        const labels = await storageService.getVideoLabels({ mediaId });
+        return { id: cmd.id, ok: true, data: { labels } };
       }
 
       default:

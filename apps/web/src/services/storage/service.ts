@@ -8,6 +8,7 @@ import type {
 	StorageConfig,
 	SerializedProject,
 	SerializedScene,
+	VideoLabelsData,
 } from "./types";
 import type { SavedSoundsData, SavedSound, SoundEffect } from "@/types/sounds";
 import {
@@ -42,6 +43,7 @@ function normalizeBookmarks({ raw }: { raw: unknown }): Bookmark[] {
 class StorageService {
 	private projectsAdapter: IndexedDBAdapter<SerializedProject>;
 	private savedSoundsAdapter: IndexedDBAdapter<SavedSoundsData>;
+	private videoLabelsAdapter: IndexedDBAdapter<VideoLabelsData>;
 	private config: StorageConfig;
 	private migrationsPromise: Promise<void> | null = null;
 
@@ -50,6 +52,7 @@ class StorageService {
 			projectsDb: "video-editor-projects",
 			mediaDb: "video-editor-media",
 			savedSoundsDb: "video-editor-saved-sounds",
+			videoLabelsDb: "video-editor-video-labels",
 			version: 1,
 		};
 
@@ -62,6 +65,12 @@ class StorageService {
 		this.savedSoundsAdapter = new IndexedDBAdapter<SavedSoundsData>(
 			this.config.savedSoundsDb,
 			"saved-sounds",
+			this.config.version,
+		);
+
+		this.videoLabelsAdapter = new IndexedDBAdapter<VideoLabelsData>(
+			this.config.videoLabelsDb,
+			"video-labels",
 			this.config.version,
 		);
 	}
@@ -473,6 +482,22 @@ class StorageService {
 			console.error("Failed to clear saved sounds:", error);
 			throw error;
 		}
+	}
+
+	async saveVideoLabels({
+		labels,
+	}: {
+		labels: VideoLabelsData;
+	}): Promise<void> {
+		await this.videoLabelsAdapter.set(labels.mediaId, labels);
+	}
+
+	async getVideoLabels({
+		mediaId,
+	}: {
+		mediaId: string;
+	}): Promise<VideoLabelsData | null> {
+		return await this.videoLabelsAdapter.get(mediaId);
 	}
 
 	isOPFSSupported(): boolean {
