@@ -3,6 +3,10 @@
 import { useEffect, useRef } from "react";
 import { EditorCore } from "@/core";
 import { getElementsAtTime } from "@/lib/timeline";
+import { extractTimelineAudio } from "@/lib/media/mediabunny";
+import { storageService } from "@/services/storage/service";
+import type { VideoLabels } from "@/types/video-labels";
+import type { TranscriptionLanguage } from "@/types/transcription";
 import type { TimelineTrack, TimelineElement } from "@/types/timeline";
 
 const WS_BRIDGE_URL = "ws://localhost:3001/ws?role=browser";
@@ -38,7 +42,7 @@ function serializeTrack(track: TimelineTrack) {
   };
 }
 
-function handleCommand(cmd: WsCommand): WsResponse {
+async function handleCommand(cmd: WsCommand): Promise<WsResponse> {
   try {
     const editor = EditorCore.getInstance();
     const { type, params } = cmd;
@@ -182,6 +186,87 @@ function handleCommand(cmd: WsCommand): WsResponse {
         return { id: cmd.id, ok: true };
       }
 
+      case "list_media": {
+        const assets = editor.media.getAssets();
+        const data = assets.map((a) => ({
+          id: a.id,
+          name: a.name,
+          type: a.type,
+          width: a.width,
+          height: a.height,
+          duration: a.duration,
+        }));
+        return { id: cmd.id, ok: true, data };
+      }
+
+      case "transcribe_video": {
+        const language = (params?.language as TranscriptionLanguage) ?? "auto";
+
+        const audioBlob = await extractTimelineAudio({
+          tracks: editor.timeline.getTracks(),
+          mediaAssets: editor.media.getAssets(),
+          totalDuration: editor.timeline.getTotalDuration(),
+        });
+
+        const formData = new FormData();
+        formData.append("file", audioBlob, "audio.wav");
+        if (language !== "auto") {
+          formData.append("language", language);
+        }
+
+        const response = await fetch("/api/transcribe", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          return {
+            id: cmd.id,
+            ok: false,
+            error:
+              (errorData as { error?: string }).error ??
+              `Transcription failed (${response.status})`,
+          };
+        }
+
+        const result = (await response.json()) as {
+          text: string;
+          segments: { text: string; start: number; end: number }[];
+          language: string;
+        };
+
+        return {
+          id: cmd.id,
+          ok: true,
+          data: {
+            text: result.text,
+            segments: result.segments,
+            language: result.language,
+          },
+        };
+      }
+
+      case "save_video_labels": {
+        const labels = params?.labels as VideoLabels;
+        if (!labels?.mediaId) {
+          return { id: cmd.id, ok: false, error: "labels with mediaId required" };
+        }
+        const projectId = editor.project.getActive().metadata.id;
+        await storageService.saveVideoLabels({ projectId, labels });
+        return { id: cmd.id, ok: true, data: { mediaId: labels.mediaId } };
+      }
+
+      case "get_video_labels": {
+        const mediaId = params?.mediaId as string;
+        if (!mediaId) {
+          return { id: cmd.id, ok: false, error: "mediaId required" };
+        }
+        const projectId = editor.project.getActive().metadata.id;
+        const labels = await storageService.loadVideoLabels({ projectId, mediaId });
+        return { id: cmd.id, ok: true, data: labels };
+      }
+
       default:
         return { id: cmd.id, ok: false, error: `Unknown command: ${type}` };
     }
@@ -202,10 +287,10 @@ export function useWsBridge() {
         console.log("[ws-bridge] connected to bridge server");
       };
 
-      ws.onmessage = (event) => {
+      ws.onmessage = async (event) => {
         try {
           const cmd = JSON.parse(event.data) as WsCommand;
-          const response = handleCommand(cmd);
+          const response = await handleCommand(cmd);
           ws.send(JSON.stringify(response));
         } catch (e) {
           console.error("[ws-bridge] failed to handle message:", e);

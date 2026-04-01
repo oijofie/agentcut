@@ -59,7 +59,11 @@ function connectWs(): Promise<void> {
   });
 }
 
-async function sendCommand(type: string, params?: Record<string, unknown>): Promise<unknown> {
+async function sendCommand(
+  type: string,
+  params?: Record<string, unknown>,
+  timeoutMs = 10000,
+): Promise<unknown> {
   await connectWs();
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     throw new Error("Not connected to ws-bridge. Is OpenCut running?");
@@ -69,8 +73,8 @@ async function sendCommand(type: string, params?: Record<string, unknown>): Prom
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       pendingRequests.delete(id);
-      reject(new Error("Command timed out (10s)"));
-    }, 10000);
+      reject(new Error(`Command timed out (${timeoutMs / 1000}s)`));
+    }, timeoutMs);
 
     pendingRequests.set(id, {
       resolve: (data) => {
@@ -190,6 +194,96 @@ server.tool(
   async () => {
     const data = await sendCommand("pause");
     return { content: [{ type: "text", text: JSON.stringify(data) }] };
+  },
+);
+
+server.tool(
+  "list_media",
+  "List all media assets in the current project",
+  {},
+  async () => {
+    const data = await sendCommand("list_media");
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  },
+);
+
+server.tool(
+  "transcribe_video",
+  "Transcribe the timeline audio using Whisper. Returns text with timestamped segments.",
+  {
+    language: z
+      .enum(["auto", "en", "es", "it", "fr", "de", "pt", "ru", "ja", "zh"])
+      .optional()
+      .describe("Language for transcription (default: auto-detect)"),
+    model: z
+      .enum([
+        "whisper-tiny",
+        "whisper-small",
+        "whisper-medium",
+        "whisper-large-v3-turbo",
+      ])
+      .optional()
+      .describe("Whisper model to use (default: whisper-small)"),
+  },
+  async ({ language, model }) => {
+    const data = await sendCommand(
+      "transcribe_video",
+      { language, model },
+      300000,
+    );
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  },
+);
+
+server.tool(
+  "save_video_labels",
+  "Save structured labels (scenes, metadata) for a video asset",
+  {
+    labels: z
+      .object({
+        mediaId: z.string(),
+        version: z.number(),
+        createdAt: z.string(),
+        global: z.object({
+          duration: z.number(),
+          resolution: z.string(),
+          fps: z.number(),
+          summary: z.string(),
+          overallTone: z.string(),
+          speakers: z.array(z.string()),
+        }),
+        scenes: z.array(
+          z.object({
+            startTime: z.number(),
+            endTime: z.number(),
+            description: z.string(),
+            category: z.string(),
+            score: z.number(),
+            speechContent: z.string().optional(),
+            speaker: z.string().optional(),
+            isHighlight: z.boolean(),
+          }),
+        ),
+      })
+      .describe("The VideoLabels object to save"),
+  },
+  async ({ labels }) => {
+    const data = await sendCommand("save_video_labels", {
+      labels,
+    });
+    return { content: [{ type: "text", text: JSON.stringify(data) }] };
+  },
+);
+
+server.tool(
+  "get_video_labels",
+  "Retrieve saved labels for a video asset",
+  {
+    mediaId: z.string().describe("ID of the media asset"),
+  },
+  async ({ mediaId }) => {
+    const data = await sendCommand("get_video_labels", { mediaId });
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
   },
 );
 

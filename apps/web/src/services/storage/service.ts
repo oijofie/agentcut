@@ -1,6 +1,7 @@
 import type { TProject, TProjectMetadata } from "@/types/project";
 import { getProjectDurationFromScenes } from "@/lib/scenes";
 import type { MediaAsset } from "@/types/assets";
+import type { VideoLabels } from "@/types/video-labels";
 import { IndexedDBAdapter } from "./indexeddb-adapter";
 import { OPFSAdapter } from "./opfs-adapter";
 import type {
@@ -50,6 +51,7 @@ class StorageService {
 			projectsDb: "video-editor-projects",
 			mediaDb: "video-editor-media",
 			savedSoundsDb: "video-editor-saved-sounds",
+			labelsDb: "video-editor-labels",
 			version: 1,
 		};
 
@@ -473,6 +475,36 @@ class StorageService {
 			console.error("Failed to clear saved sounds:", error);
 			throw error;
 		}
+	}
+
+	private getLabelsAdapter({ projectId }: { projectId: string }) {
+		return new IndexedDBAdapter<VideoLabels>(
+			`${this.config.labelsDb}-${projectId}`,
+			"labels",
+			this.config.version,
+		);
+	}
+
+	async saveVideoLabels({
+		projectId,
+		labels,
+	}: {
+		projectId: string;
+		labels: VideoLabels;
+	}): Promise<void> {
+		const adapter = this.getLabelsAdapter({ projectId });
+		await adapter.set(labels.mediaId, labels);
+	}
+
+	async loadVideoLabels({
+		projectId,
+		mediaId,
+	}: {
+		projectId: string;
+		mediaId: string;
+	}): Promise<VideoLabels | null> {
+		const adapter = this.getLabelsAdapter({ projectId });
+		return adapter.get(mediaId);
 	}
 
 	isOPFSSupported(): boolean {
