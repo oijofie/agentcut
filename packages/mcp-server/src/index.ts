@@ -556,12 +556,12 @@ function formatTime(seconds: number): string {
 
 server.tool(
   "generate_scene_md",
-  "Generate per-scene markdown files from saved video labels. Creates one MD file per scene plus an index file.",
+  "Generate a single markdown file with per-scene detailed breakdown from saved video labels.",
   {
     mediaId: z.string().describe("ID of the media asset"),
-    outputDir: z.string().describe("Absolute path to output directory"),
+    outputPath: z.string().describe("Absolute path to output .md file"),
   },
-  async ({ mediaId, outputDir }) => {
+  async ({ mediaId, outputPath }) => {
     // Get labels from browser
     const result = await sendCommand("get_video_labels", { mediaId }) as {
       id?: string;
@@ -594,88 +594,49 @@ server.tool(
       };
     }
 
-    // Create output directory
+    // Create parent directory if needed
+    const outputDir = dirname(outputPath);
     if (!existsSync(outputDir)) {
       mkdirSync(outputDir, { recursive: true });
     }
 
     const { global, scenes } = result;
-    const files: string[] = [];
 
-    // Generate per-scene MD files
-    for (let i = 0; i < scenes.length; i++) {
-      const scene = scenes[i];
-      const num = String(i + 1).padStart(2, "0");
-      const filename = `scene_${num}.md`;
-      const filepath = join(outputDir, filename);
-
-      const lines = [
-        `# Scene ${num}: ${scene.category || "No Category"}`,
-        "",
-        `## Time`,
-        `- **Start:** ${formatTime(scene.startTime)}`,
-        `- **End:** ${formatTime(scene.endTime)}`,
-        `- **Duration:** ${Math.round(scene.endTime - scene.startTime)}s`,
-        "",
-        `## Description`,
-        scene.description,
-        "",
-      ];
-
-      if (scene.speechContent) {
-        lines.push(`## Speech Content`, scene.speechContent, "");
-      }
-      if (scene.speaker) {
-        lines.push(`## Speaker`, scene.speaker, "");
-      }
-
-      lines.push(
-        `## Metadata`,
-        `- **Score:** ${scene.score ?? "-"}/10`,
-        `- **Highlight:** ${scene.isHighlight ? "Yes" : "No"}`,
-        "",
-      );
-
-      writeFileSync(filepath, lines.join("\n"));
-      files.push(filename);
-    }
-
-    // Generate index MD
-    const indexLines = [
-      `# Video Analysis: ${global?.summary || mediaId}`,
-      "",
-      `## Overview`,
-      `- **Duration:** ${global ? formatTime(global.duration) : "-"}`,
-      `- **Resolution:** ${global?.resolution || "-"}`,
-      `- **FPS:** ${global?.fps || "-"}`,
-      `- **Tone:** ${global?.overallTone || "-"}`,
-      `- **Speakers:** ${global?.speakers?.length ? global.speakers.join(", ") : "N/A"}`,
-      "",
-      `## Scenes`,
+    const lines = [
+      `# ${global?.summary || mediaId} — シーン別やりとり詳細`,
       "",
     ];
 
-    for (let i = 0; i < scenes.length; i++) {
-      const scene = scenes[i];
-      const num = String(i + 1).padStart(2, "0");
-      const highlight = scene.isHighlight ? " ★" : "";
-      indexLines.push(
-        `### [Scene ${num}](scene_${num}.md)${highlight}`,
-        `- **${formatTime(scene.startTime)} - ${formatTime(scene.endTime)}** | ${scene.category || "-"} | Score: ${scene.score ?? "-"}/10`,
-        `- ${scene.description}`,
-        "",
-      );
+    for (const scene of scenes) {
+      const timeRange = `${formatTime(scene.startTime)}〜${formatTime(scene.endTime)}`;
+      const title = scene.category || "シーン";
+      lines.push(`## ${timeRange} — ${title}`);
+      lines.push("");
+
+      // Split description into bullet points by sentence
+      const sentences = scene.description
+        .split(/(?<=[。！？\n])|(?<=\. )/g)
+        .map((s: string) => s.trim())
+        .filter((s: string) => s.length > 0);
+
+      for (const sentence of sentences) {
+        lines.push(`- ${sentence}`);
+      }
+
+      if (scene.speechContent) {
+        lines.push(`- 発言: 「${scene.speechContent}」`);
+      }
+
+      lines.push("");
     }
 
-    writeFileSync(join(outputDir, "index.md"), indexLines.join("\n"));
-    files.push("index.md");
+    writeFileSync(outputPath, lines.join("\n"));
 
     return {
       content: [{
         type: "text",
         text: JSON.stringify({
-          outputDir,
-          files,
+          outputPath,
           sceneCount: scenes.length,
         }, null, 2),
       }],

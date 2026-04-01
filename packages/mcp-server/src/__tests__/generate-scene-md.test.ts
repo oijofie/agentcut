@@ -2,6 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { existsSync, readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { dirname } from "node:path";
 
 function formatTime(seconds: number): string {
 	const h = Math.floor(seconds / 3600);
@@ -13,7 +14,7 @@ function formatTime(seconds: number): string {
 function generateSceneMd({
 	scenes,
 	global,
-	outputDir,
+	outputPath,
 }: {
 	scenes: Array<{
 		startTime: number;
@@ -33,90 +34,52 @@ function generateSceneMd({
 		overallTone: string;
 		speakers: string[];
 	};
-	outputDir: string;
-}): { files: string[]; sceneCount: number } {
+	outputPath: string;
+}): { outputPath: string; sceneCount: number } {
 	const { writeFileSync, mkdirSync } = require("node:fs");
 
+	const outputDir = dirname(outputPath);
 	if (!existsSync(outputDir)) {
 		mkdirSync(outputDir, { recursive: true });
 	}
 
-	const files: string[] = [];
-
-	for (let i = 0; i < scenes.length; i++) {
-		const scene = scenes[i];
-		const num = String(i + 1).padStart(2, "0");
-		const filename = `scene_${num}.md`;
-		const filepath = join(outputDir, filename);
-
-		const lines = [
-			`# Scene ${num}: ${scene.category || "No Category"}`,
-			"",
-			"## Time",
-			`- **Start:** ${formatTime(scene.startTime)}`,
-			`- **End:** ${formatTime(scene.endTime)}`,
-			`- **Duration:** ${Math.round(scene.endTime - scene.startTime)}s`,
-			"",
-			"## Description",
-			scene.description,
-			"",
-		];
-
-		if (scene.speechContent) {
-			lines.push("## Speech Content", scene.speechContent, "");
-		}
-		if (scene.speaker) {
-			lines.push("## Speaker", scene.speaker, "");
-		}
-
-		lines.push(
-			"## Metadata",
-			`- **Score:** ${scene.score ?? "-"}/10`,
-			`- **Highlight:** ${scene.isHighlight ? "Yes" : "No"}`,
-			"",
-		);
-
-		writeFileSync(filepath, lines.join("\n"));
-		files.push(filename);
-	}
-
-	const indexLines = [
-		`# Video Analysis: ${global.summary}`,
-		"",
-		"## Overview",
-		`- **Duration:** ${formatTime(global.duration)}`,
-		`- **Resolution:** ${global.resolution}`,
-		`- **FPS:** ${global.fps}`,
-		`- **Tone:** ${global.overallTone}`,
-		`- **Speakers:** ${global.speakers.length ? global.speakers.join(", ") : "N/A"}`,
-		"",
-		"## Scenes",
+	const lines = [
+		`# ${global.summary} — シーン別やりとり詳細`,
 		"",
 	];
 
-	for (let i = 0; i < scenes.length; i++) {
-		const scene = scenes[i];
-		const num = String(i + 1).padStart(2, "0");
-		const highlight = scene.isHighlight ? " ★" : "";
-		indexLines.push(
-			`### [Scene ${num}](scene_${num}.md)${highlight}`,
-			`- **${formatTime(scene.startTime)} - ${formatTime(scene.endTime)}** | ${scene.category || "-"} | Score: ${scene.score ?? "-"}/10`,
-			`- ${scene.description}`,
-			"",
-		);
+	for (const scene of scenes) {
+		const timeRange = `${formatTime(scene.startTime)}〜${formatTime(scene.endTime)}`;
+		const title = scene.category || "シーン";
+		lines.push(`## ${timeRange} — ${title}`);
+		lines.push("");
+
+		const sentences = scene.description
+			.split(/(?<=[。！？\n])|(?<=\. )/g)
+			.map((s: string) => s.trim())
+			.filter((s: string) => s.length > 0);
+
+		for (const sentence of sentences) {
+			lines.push(`- ${sentence}`);
+		}
+
+		if (scene.speechContent) {
+			lines.push(`- 発言: 「${scene.speechContent}」`);
+		}
+
+		lines.push("");
 	}
 
-	writeFileSync(join(outputDir, "index.md"), indexLines.join("\n"));
-	files.push("index.md");
+	writeFileSync(outputPath, lines.join("\n"));
 
-	return { files, sceneCount: scenes.length };
+	return { outputPath, sceneCount: scenes.length };
 }
 
 const sampleGlobal = {
 	duration: 120,
 	resolution: "1920x1080",
 	fps: 30,
-	summary: "テスト動画の概要",
+	summary: "テスト動画",
 	overallTone: "カジュアル",
 	speakers: ["話者A", "話者B"],
 };
@@ -125,17 +88,17 @@ const sampleScenes = [
 	{
 		startTime: 0,
 		endTime: 30,
-		description: "オープニング、話者Aが挨拶している",
+		description: "オープニング。話者Aが挨拶している。",
 		category: "オープニング",
 		score: 3,
-		speechContent: "こんにちは",
+		speechContent: "こんにちは、今日はよろしくお願いします",
 		speaker: "話者A",
 		isHighlight: false,
 	},
 	{
 		startTime: 30,
 		endTime: 90,
-		description: "メインの対談シーン",
+		description: "メインの対談シーン。白熱した議論が展開される。",
 		category: "対談",
 		score: 8,
 		isHighlight: true,
@@ -161,108 +124,95 @@ afterEach(() => {
 });
 
 describe("generate_scene_md", () => {
-	test("creates correct number of files", () => {
+	test("creates a single MD file", () => {
+		const outputPath = join(tmpDir, "scenes.md");
 		const result = generateSceneMd({
 			scenes: sampleScenes,
 			global: sampleGlobal,
-			outputDir: tmpDir,
+			outputPath,
 		});
 
 		expect(result.sceneCount).toBe(3);
-		expect(result.files).toHaveLength(4); // 3 scenes + index
-		expect(result.files).toContain("index.md");
-		expect(result.files).toContain("scene_01.md");
-		expect(result.files).toContain("scene_02.md");
-		expect(result.files).toContain("scene_03.md");
+		expect(existsSync(outputPath)).toBe(true);
 	});
 
-	test("all files exist on disk", () => {
-		const result = generateSceneMd({
-			scenes: sampleScenes,
-			global: sampleGlobal,
-			outputDir: tmpDir,
-		});
-
-		for (const file of result.files) {
-			expect(existsSync(join(tmpDir, file))).toBe(true);
-		}
-	});
-
-	test("scene file contains correct content", () => {
+	test("title uses global summary", () => {
+		const outputPath = join(tmpDir, "scenes.md");
 		generateSceneMd({
 			scenes: sampleScenes,
 			global: sampleGlobal,
-			outputDir: tmpDir,
+			outputPath,
 		});
 
-		const scene01 = readFileSync(join(tmpDir, "scene_01.md"), "utf-8");
-		expect(scene01).toContain("# Scene 01: オープニング");
-		expect(scene01).toContain("**Start:** 00:00:00");
-		expect(scene01).toContain("**End:** 00:00:30");
-		expect(scene01).toContain("**Duration:** 30s");
-		expect(scene01).toContain("オープニング、話者Aが挨拶している");
-		expect(scene01).toContain("## Speech Content");
-		expect(scene01).toContain("こんにちは");
-		expect(scene01).toContain("## Speaker");
-		expect(scene01).toContain("話者A");
-		expect(scene01).toContain("**Score:** 3/10");
-		expect(scene01).toContain("**Highlight:** No");
+		const content = readFileSync(outputPath, "utf-8");
+		expect(content).toContain("# テスト動画 — シーン別やりとり詳細");
 	});
 
-	test("highlight scene is marked correctly", () => {
+	test("each scene has time range and category heading", () => {
+		const outputPath = join(tmpDir, "scenes.md");
 		generateSceneMd({
 			scenes: sampleScenes,
 			global: sampleGlobal,
-			outputDir: tmpDir,
+			outputPath,
 		});
 
-		const scene02 = readFileSync(join(tmpDir, "scene_02.md"), "utf-8");
-		expect(scene02).toContain("**Highlight:** Yes");
-		expect(scene02).toContain("**Score:** 8/10");
+		const content = readFileSync(outputPath, "utf-8");
+		expect(content).toContain("## 00:00:00〜00:00:30 — オープニング");
+		expect(content).toContain("## 00:00:30〜00:01:30 — 対談");
+		expect(content).toContain("## 00:01:30〜00:02:00 — エンディング");
 	});
 
-	test("scene without optional fields omits those sections", () => {
+	test("descriptions are split into bullet points by sentence", () => {
+		const outputPath = join(tmpDir, "scenes.md");
 		generateSceneMd({
 			scenes: sampleScenes,
 			global: sampleGlobal,
-			outputDir: tmpDir,
+			outputPath,
 		});
 
-		const scene02 = readFileSync(join(tmpDir, "scene_02.md"), "utf-8");
-		expect(scene02).not.toContain("## Speech Content");
-		expect(scene02).not.toContain("## Speaker");
+		const content = readFileSync(outputPath, "utf-8");
+		expect(content).toContain("- オープニング。");
+		expect(content).toContain("- 話者Aが挨拶している。");
+		expect(content).toContain("- メインの対談シーン。");
+		expect(content).toContain("- 白熱した議論が展開される。");
 	});
 
-	test("index file contains overview and scene list", () => {
+	test("speech content is included as quote", () => {
+		const outputPath = join(tmpDir, "scenes.md");
 		generateSceneMd({
 			scenes: sampleScenes,
 			global: sampleGlobal,
-			outputDir: tmpDir,
+			outputPath,
 		});
 
-		const index = readFileSync(join(tmpDir, "index.md"), "utf-8");
-		expect(index).toContain("# Video Analysis: テスト動画の概要");
-		expect(index).toContain("**Duration:** 00:02:00");
-		expect(index).toContain("**Resolution:** 1920x1080");
-		expect(index).toContain("**Tone:** カジュアル");
-		expect(index).toContain("**Speakers:** 話者A, 話者B");
-		expect(index).toContain("[Scene 01](scene_01.md)");
-		expect(index).toContain("[Scene 02](scene_02.md) ★");
-		expect(index).toContain("[Scene 03](scene_03.md)");
+		const content = readFileSync(outputPath, "utf-8");
+		expect(content).toContain("- 発言: 「こんにちは、今日はよろしくお願いします」");
 	});
 
-	test("creates output directory if it does not exist", () => {
-		const nestedDir = join(tmpDir, "nested", "output");
-		expect(existsSync(nestedDir)).toBe(false);
+	test("scene without speechContent omits speech line", () => {
+		const outputPath = join(tmpDir, "scenes.md");
+		generateSceneMd({
+			scenes: sampleScenes,
+			global: sampleGlobal,
+			outputPath,
+		});
+
+		const content = readFileSync(outputPath, "utf-8");
+		const scene2Section = content.split("## 00:00:30〜00:01:30")[1].split("## 00:01:30〜00:02:00")[0];
+		expect(scene2Section).not.toContain("発言:");
+	});
+
+	test("creates parent directory if needed", () => {
+		const outputPath = join(tmpDir, "nested", "dir", "scenes.md");
+		expect(existsSync(join(tmpDir, "nested"))).toBe(false);
 
 		generateSceneMd({
 			scenes: sampleScenes,
 			global: sampleGlobal,
-			outputDir: nestedDir,
+			outputPath,
 		});
 
-		expect(existsSync(nestedDir)).toBe(true);
-		expect(existsSync(join(nestedDir, "index.md"))).toBe(true);
+		expect(existsSync(outputPath)).toBe(true);
 	});
 });
 
