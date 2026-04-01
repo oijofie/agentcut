@@ -16,7 +16,8 @@ import type {
 } from "@/types/timeline";
 import type { EffectParamValues } from "@/types/effects";
 
-const WS_BRIDGE_URL = "ws://localhost:3001/ws?role=browser";
+const WS_PORT = process.env.NEXT_PUBLIC_WS_PORT || "3001";
+const WS_BRIDGE_URL = `ws://localhost:${WS_PORT}/ws?role=browser`;
 
 interface WsCommand {
   id: string;

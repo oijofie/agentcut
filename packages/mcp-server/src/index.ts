@@ -27,7 +27,8 @@ try {
   // .env file is optional
 }
 
-const WS_BRIDGE_URL = "ws://localhost:3001/ws?role=mcp";
+const WS_PORT = process.env.WS_PORT || "3001";
+const WS_BRIDGE_URL = `ws://localhost:${WS_PORT}/ws?role=mcp`;
 
 // Resolve ffmpeg/ffprobe paths (homebrew may not be in MCP server PATH)
 const FFMPEG_CANDIDATES = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"];

@@ -7,7 +7,7 @@
  * - ブラウザ(OpenCut)からの結果返信
  */
 
-const WS_PORT = 3001;
+const WS_PORT = Number(process.env.WS_PORT) || 3001;
 
 const server = Bun.serve({
   port: WS_PORT,
