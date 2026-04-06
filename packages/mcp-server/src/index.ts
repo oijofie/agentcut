@@ -273,6 +273,24 @@ server.tool(
 );
 
 server.tool(
+  "add_image",
+  "Add an image (from the project's media assets) as an overlay on the timeline",
+  {
+    mediaId: z.string().describe("ID of the image asset"),
+    startTime: z.coerce.number().optional().describe("Start time on timeline in seconds (default: 0)"),
+    duration: z.coerce.number().optional().describe("Duration in seconds (default: full timeline duration)"),
+    x: z.coerce.number().optional().describe("X offset from center in pixels (default: 0)"),
+    y: z.coerce.number().optional().describe("Y offset from center in pixels (default: 0)"),
+    opacity: z.coerce.number().optional().describe("Opacity 0-1 (default: 1)"),
+    scale: z.coerce.number().optional().describe("Scale factor (default: 1.0, e.g. 0.5 = half size, 2.0 = double)"),
+  },
+  async ({ mediaId, startTime, duration, x, y, opacity, scale }) => {
+    const data = await sendCommand("add_image", { mediaId, startTime, duration, x, y, opacity, scale });
+    return { content: [{ type: "text", text: JSON.stringify(data) }] };
+  },
+);
+
+server.tool(
   "transcribe",
   "Transcribe the timeline audio using OpenAI Whisper API. Returns word-level timestamps.",
   {
