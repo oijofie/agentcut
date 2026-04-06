@@ -309,7 +309,7 @@ async function handleCommand(cmd: WsCommand): Promise<WsResponse> {
         const textElement = buildTextElement({
           raw: {
             content,
-            fontSize: (params?.fontSize as number) ?? 8,
+            fontSize: (params?.fontSize as number) ?? 2,
             color: (params?.color as string) ?? "#ffffff",
             transform: {
               scale: 1,
@@ -320,6 +320,7 @@ async function handleCommand(cmd: WsCommand): Promise<WsResponse> {
               rotate: 0,
             },
             duration: (params?.duration as number) ?? (totalDuration || 10),
+            background: { enabled: false, color: "transparent" },
           },
           startTime: (params?.startTime as number) ?? 0,
         });
