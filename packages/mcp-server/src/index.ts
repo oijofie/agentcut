@@ -518,22 +518,29 @@ server.tool(
 		let duration = 0;
 		let resolution = "";
 		let fps = 0;
+		const log = (msg: string) => console.error(`[create_video_labels] ${msg} (${(performance.now() / 1000).toFixed(1)}s)`);
+
+		log("start");
 
 		if (file_path) {
 			if (!existsSync(file_path)) {
 				return { content: [{ type: "text", text: `File not found: ${file_path}` }], isError: true };
 			}
 			inputFile = file_path;
+			log(`using file_path: ${file_path}`);
 		} else {
+			log("extracting video from browser...");
 			const result = await sendCommand("extract_video", {}, 300000) as { video: string; duration: number };
 			duration = result.duration;
 			tmpDir = mkdtempSync(join(tmpdir(), "opencut-gemini-"));
 			inputFile = join(tmpDir, "input.mp4");
 			writeFileSync(inputFile, Buffer.from(result.video, "base64"));
+			log("video extracted from browser");
 		}
 
 		try {
 			// Get video metadata via ffprobe
+			log("running ffprobe...");
 			const probeResult = await new Promise<string>((res, rej) => {
 				execFile(
 					FFPROBE,
@@ -551,20 +558,25 @@ server.tool(
 			if (!duration) {
 				duration = Number.parseFloat(stream?.duration ?? probe.format?.duration ?? "0");
 			}
+			log(`ffprobe done: ${resolution}, ${fps}fps, ${duration.toFixed(1)}s`);
 
 			// Upload to Gemini File API
+			log("uploading to Gemini...");
 			const genai = new GoogleGenAI({ apiKey });
 			const uploaded = await genai.files.upload({ file: inputFile, config: { mimeType: "video/mp4" } });
 			let file = uploaded;
+			log(`upload complete, state=${uploaded.state}`);
 			let pollCount = 0;
 			while (file.state === "PROCESSING") {
-				if (++pollCount > 60) throw new Error("Gemini file processing timed out (5 min)");
+				if (++pollCount > 120) throw new Error("Gemini file processing timed out (10 min)");
 				await new Promise((r) => setTimeout(r, 5000));
 				file = await genai.files.get({ name: file.name! });
+				if (pollCount % 6 === 0) log(`still processing... (poll #${pollCount})`);
 			}
 			if (file.state !== "ACTIVE") {
 				throw new Error(`Gemini file upload failed: state=${file.state}`);
 			}
+			log("file active, calling Gemini model...");
 
 			// Call Gemini with structured output
 			const labelsSchema = {
@@ -636,7 +648,9 @@ server.tool(
 				},
 			});
 
+			log("Gemini response received");
 			const parsed = JSON.parse(response.text!);
+			log(`parsed: ${parsed.scenes?.length ?? 0} scenes`);
 
 			const labels = {
 				mediaId,
@@ -654,11 +668,13 @@ server.tool(
 			};
 
 			// Save via WebSocket
+			log("saving labels...");
 			await sendCommand("save_video_labels", { labels });
 
 			// Cleanup Gemini file
 			await genai.files.delete({ name: file.name! }).catch(() => {});
 
+			log("done!");
 			return {
 				content: [{
 					type: "text",
