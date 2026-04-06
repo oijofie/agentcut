@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import WebSocket from "ws";
 import OpenAI from "openai";
+import { GoogleGenAI } from "@google/genai";
 import { readFileSync, writeFileSync, unlinkSync, mkdtempSync, mkdirSync, existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { resolve, dirname, join } from "node:path";
@@ -291,7 +292,7 @@ server.tool(
 );
 
 server.tool(
-  "transcribe",
+  "transcribe_api",
   "Transcribe the timeline audio using OpenAI Whisper API. Returns word-level timestamps.",
   {
     language: z.string().optional().describe("Language code (e.g. 'ja', 'en'). Auto-detected if omitted."),
@@ -481,8 +482,8 @@ server.tool(
 );
 
 server.tool(
-  "transcribe_video",
-  "Transcribe the timeline audio using Whisper. Returns text with timestamped segments.",
+  "transcribe_local",
+  "Transcribe the timeline audio using local Whisper model in the browser. Returns text with timestamped segments.",
   {
     language: z
       .enum(["auto", "en", "es", "it", "fr", "de", "pt", "ru", "ja", "zh"])
@@ -563,6 +564,190 @@ server.tool(
     }
     return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
   },
+);
+
+server.tool(
+	"analyze_video_gemini",
+	"Analyze video using Google Gemini API. Uploads video to Gemini, performs scene-by-scene labeling with structured output, and saves labels.",
+	{
+		mediaId: z.string().describe("ID of the media asset to label"),
+		file_path: z.string().optional().describe("Absolute path to a local video file. If omitted, exports from the current timeline."),
+		model: z.string().optional().describe("Gemini model name (default: gemini-3-flash-preview)"),
+	},
+	async ({ mediaId, file_path, model }) => {
+		const apiKey = process.env.GEMINI_API_KEY;
+		if (!apiKey) {
+			return { content: [{ type: "text", text: "Error: GEMINI_API_KEY environment variable is not set" }], isError: true };
+		}
+
+		const modelName = model ?? process.env.GEMINI_MODEL!;
+		let inputFile: string;
+		let tmpDir: string | null = null;
+		let duration = 0;
+		let resolution = "";
+		let fps = 0;
+
+		if (file_path) {
+			if (!existsSync(file_path)) {
+				return { content: [{ type: "text", text: `File not found: ${file_path}` }], isError: true };
+			}
+			inputFile = file_path;
+		} else {
+			const result = await sendCommand("extract_video", {}, 300000) as { video: string; duration: number };
+			duration = result.duration;
+			tmpDir = mkdtempSync(join(tmpdir(), "opencut-gemini-"));
+			inputFile = join(tmpDir, "input.mp4");
+			writeFileSync(inputFile, Buffer.from(result.video, "base64"));
+		}
+
+		try {
+			// Get video metadata via ffprobe
+			const probeResult = await new Promise<string>((res, rej) => {
+				execFile(
+					FFPROBE,
+					["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,r_frame_rate,duration", "-show_entries", "format=duration", "-of", "json", inputFile],
+					(err, stdout) => err ? rej(new Error(`ffprobe failed: ${err.message}`)) : res(stdout),
+				);
+			});
+			const probe = JSON.parse(probeResult);
+			const stream = probe.streams?.[0];
+			if (stream) {
+				resolution = `${stream.width}x${stream.height}`;
+				const [num, den] = (stream.r_frame_rate ?? "0/1").split("/");
+				fps = Math.round(Number(num) / Number(den));
+			}
+			if (!duration) {
+				duration = Number.parseFloat(stream?.duration ?? probe.format?.duration ?? "0");
+			}
+
+			// Upload to Gemini File API
+			const genai = new GoogleGenAI({ apiKey });
+			const uploaded = await genai.files.upload({ file: inputFile, config: { mimeType: "video/mp4" } });
+			let file = uploaded;
+			let pollCount = 0;
+			while (file.state === "PROCESSING") {
+				if (++pollCount > 60) throw new Error("Gemini file processing timed out (5 min)");
+				await new Promise((r) => setTimeout(r, 5000));
+				file = await genai.files.get({ name: file.name! });
+			}
+			if (file.state !== "ACTIVE") {
+				throw new Error(`Gemini file upload failed: state=${file.state}`);
+			}
+
+			// Call Gemini with structured output
+			const labelsSchema = {
+				type: "object",
+				properties: {
+					summary: { type: "string" },
+					overallTone: { type: "string" },
+					speakers: { type: "array", items: { type: "string" } },
+					scenes: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								startTime: { type: "number" },
+								endTime: { type: "number" },
+								description: { type: "string" },
+								category: { type: "string" },
+								score: { type: "number" },
+								audioType: { type: "string", enum: ["speech", "music", "silence", "noise", "mixed"] },
+								speechContent: { type: "string" },
+								speaker: { type: "string" },
+								visualQuality: { type: "string", enum: ["good", "fair", "poor"] },
+								cameraMovement: { type: "string", enum: ["static", "pan", "zoom", "handheld"] },
+								energyLevel: { type: "number" },
+								isHighlight: { type: "boolean" },
+							},
+							required: ["startTime", "endTime", "description", "audioType", "visualQuality", "cameraMovement", "energyLevel", "isHighlight"],
+						},
+					},
+				},
+				required: ["summary", "overallTone", "speakers", "scenes"],
+			};
+
+			const prompt = `この動画の内容を解析し、シーンごとに分割してラベリングしてください。
+
+ルール:
+- 動画全体を隙間なくシーンに分割してください（最初のシーンのstartTime=0、最後のシーンのendTime=動画の終了時刻）
+- startTime, endTimeは秒数（小数点OK）で返してください
+- descriptionに、そのシーンの具体的な内容を詳しく記述してください（誰が何をしているか、何を話しているか）
+- categoryに、内容のカテゴリを記述してください（例: リアクション、名言、議論、ハプニング、雑談、企画説明 等）
+- scoreに、切り抜き動画としての面白さ・バズりやすさを1-10で評価してください（10が最も面白い）
+- audioTypeに、音声の種類を分類してください
+- speechContentに、発言内容を書き起こしてください（なければ空文字列）
+- speakerに、話者を特定してください（なければ空文字列）
+- visualQualityに、映像品質を評価してください
+- cameraMovementに、カメラの動きを分類してください
+- energyLevelに、シーンのエネルギーレベルを1-5で評価してください
+- isHighlightに、特に面白い・注目すべきシーンかどうかをtrue/falseで返してください
+- summaryに、動画全体の概要を記述してください
+- overallToneに、動画全体のトーンを記述してください
+- speakersに、動画に登場する話者の一覧を返してください`;
+
+			const response = await genai.models.generateContent({
+				model: modelName,
+				contents: [
+					{
+						role: "user",
+						parts: [
+							{ fileData: { fileUri: file.uri!, mimeType: "video/mp4" } },
+							{ text: prompt },
+						],
+					},
+				],
+				config: {
+					temperature: 0.1,
+					maxOutputTokens: 65536,
+					responseMimeType: "application/json",
+					responseSchema: labelsSchema,
+				},
+			});
+
+			const parsed = JSON.parse(response.text!);
+
+			const labels = {
+				mediaId,
+				version: 1,
+				createdAt: new Date().toISOString(),
+				global: {
+					duration,
+					resolution,
+					fps,
+					summary: parsed.summary,
+					overallTone: parsed.overallTone,
+					speakers: parsed.speakers,
+				},
+				scenes: parsed.scenes,
+			};
+
+			// Save via WebSocket
+			await sendCommand("save_video_labels", { labels });
+
+			// Cleanup Gemini file
+			await genai.files.delete({ name: file.name! }).catch(() => {});
+
+			return {
+				content: [{
+					type: "text",
+					text: JSON.stringify({
+						success: true,
+						mediaId,
+						model: modelName,
+						sceneCount: parsed.scenes.length,
+						duration,
+						resolution,
+						summary: parsed.summary,
+					}, null, 2),
+				}],
+			};
+		} finally {
+			if (tmpDir) {
+				try { unlinkSync(join(tmpDir, "input.mp4")); } catch {}
+				try { unlinkSync(tmpDir); } catch {}
+			}
+		}
+	},
 );
 
 server.tool(
