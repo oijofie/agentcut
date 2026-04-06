@@ -720,6 +720,32 @@ server.tool(
   }
 );
 
+server.tool(
+	"clip_create",
+	"Split the timeline at the start and end of a scene to create a clip boundary (razor cut). Does not remove anything.",
+	{
+		startTime: z.number().describe("Start time of the clip in seconds"),
+		endTime: z.number().describe("End time of the clip in seconds"),
+	},
+	async ({ startTime, endTime }) => {
+		const startResult = await sendCommand("split", { time: startTime });
+		const endResult = await sendCommand("split", { time: endTime });
+		return {
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						splits: [
+							{ time: startTime, result: startResult },
+							{ time: endTime, result: endResult },
+						],
+					}),
+				},
+			],
+		};
+	}
+);
+
 function fmtTime(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
