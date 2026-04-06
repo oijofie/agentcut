@@ -15,7 +15,12 @@
     "lint:web:fix": "biome lint apps/web/src --write --max-diagnostics=1000",
     "format:web": "biome format apps/web/src/services/renderer --write --max-diagnostics=1000",
     "test": "bun test",
-    "generate:fonts": "npx tsx apps/web/scripts/generate-font-sprites.ts"
+    "generate:fonts": "npx tsx apps/web/scripts/generate-font-sprites.ts",
+    "dev:ws-bridge": "bun run --watch packages/ws-bridge/src/server.ts",
+    "dev:mcp": "bun run packages/mcp-server/src/index.ts",
+    "dev:web:b": "PORT=3100 NEXT_PUBLIC_WS_PORT=3101 turbo run dev --filter=@opencut/web",
+    "dev:ws-bridge:b": "WS_PORT=3101 bun run --watch packages/ws-bridge/src/server.ts",
+    "dev:mcp:b": "WS_PORT=3101 bun run packages/mcp-server/src/index.ts"
   },
   "dependencies": {
     "@types/react": "^19.2.10",

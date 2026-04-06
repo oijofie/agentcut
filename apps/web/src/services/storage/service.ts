@@ -1,6 +1,7 @@
 import type { TProject, TProjectMetadata } from "@/types/project";
 import { getProjectDurationFromScenes } from "@/lib/scenes";
 import type { MediaAsset } from "@/types/assets";
+import type { VideoLabels } from "@/types/video-labels";
 import { IndexedDBAdapter } from "./indexeddb-adapter";
 import { OPFSAdapter } from "./opfs-adapter";
 import type {
@@ -8,6 +9,7 @@ import type {
 	StorageConfig,
 	SerializedProject,
 	SerializedScene,
+	VideoLabelsData,
 } from "./types";
 import type { SavedSoundsData, SavedSound, SoundEffect } from "@/types/sounds";
 import {
@@ -42,6 +44,7 @@ function normalizeBookmarks({ raw }: { raw: unknown }): Bookmark[] {
 class StorageService {
 	private projectsAdapter: IndexedDBAdapter<SerializedProject>;
 	private savedSoundsAdapter: IndexedDBAdapter<SavedSoundsData>;
+	private videoLabelsAdapter: IndexedDBAdapter<VideoLabelsData>;
 	private config: StorageConfig;
 	private migrationsPromise: Promise<void> | null = null;
 
@@ -50,6 +53,8 @@ class StorageService {
 			projectsDb: "video-editor-projects",
 			mediaDb: "video-editor-media",
 			savedSoundsDb: "video-editor-saved-sounds",
+			videoLabelsDb: "video-editor-video-labels",
+			labelsDb: "video-editor-labels",
 			version: 1,
 		};
 
@@ -62,6 +67,12 @@ class StorageService {
 		this.savedSoundsAdapter = new IndexedDBAdapter<SavedSoundsData>(
 			this.config.savedSoundsDb,
 			"saved-sounds",
+			this.config.version,
+		);
+
+		this.videoLabelsAdapter = new IndexedDBAdapter<VideoLabelsData>(
+			this.config.videoLabelsDb,
+			"video-labels",
 			this.config.version,
 		);
 	}
@@ -473,6 +484,36 @@ class StorageService {
 			console.error("Failed to clear saved sounds:", error);
 			throw error;
 		}
+	}
+
+	private getLabelsAdapter({ projectId }: { projectId: string }) {
+		return new IndexedDBAdapter<VideoLabels>(
+			`${this.config.labelsDb}-${projectId}`,
+			"labels",
+			this.config.version,
+		);
+	}
+
+	async saveVideoLabels({
+		projectId,
+		labels,
+	}: {
+		projectId: string;
+		labels: VideoLabels;
+	}): Promise<void> {
+		const adapter = this.getLabelsAdapter({ projectId });
+		await adapter.set(labels.mediaId, labels);
+	}
+
+	async loadVideoLabels({
+		projectId,
+		mediaId,
+	}: {
+		projectId: string;
+		mediaId: string;
+	}): Promise<VideoLabels | null> {
+		const adapter = this.getLabelsAdapter({ projectId });
+		return adapter.get(mediaId);
 	}
 
 	isOPFSSupported(): boolean {
