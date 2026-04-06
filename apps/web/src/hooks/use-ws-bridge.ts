@@ -482,7 +482,7 @@ async function handleCommand(cmd: WsCommand): Promise<WsResponse> {
         return { id: cmd.id, ok: true, data: { frames, mediaId, interval } };
       }
 
-      case "transcribe_video": {
+      case "transcribe_local": {
         const language = (params?.language as TranscriptionLanguage) ?? "auto";
 
         const audioBlob = await extractTimelineAudio({
