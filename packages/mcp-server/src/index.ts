@@ -547,7 +547,180 @@ server.tool(
   },
 );
 
-function formatTime(seconds: number): string {
+server.tool(
+  "clip_recommendation",
+  "Retrieve and structure labeled scene data for clip candidate recommendation. Returns ranked scenes with context for AI analysis.",
+  {
+    mediaId: z.string().describe("ID of the media asset"),
+    minDuration: z
+      .number()
+      .optional()
+      .describe("Minimum clip duration in seconds (default: 3)"),
+    maxDuration: z
+      .number()
+      .optional()
+      .describe("Maximum clip duration in seconds (default: 60)"),
+    purpose: z
+      .string()
+      .optional()
+      .describe(
+        "Intended use: 'highlight_reel', 'social_short', 'recap' (default: highlight_reel)"
+      ),
+  },
+  async ({ mediaId, minDuration, maxDuration, purpose }) => {
+    const min = minDuration ?? 3;
+    const max = maxDuration ?? 60;
+    const clipPurpose = purpose ?? "highlight_reel";
+
+    const result = (await sendCommand("get_video_labels", {
+      mediaId,
+    })) as {
+      global?: {
+        duration: number;
+        resolution: string;
+        fps: number;
+        summary: string;
+        overallTone: string;
+        speakers: string[];
+      };
+      scenes?: Array<{
+        startTime: number;
+        endTime: number;
+        description: string;
+        category?: string;
+        score?: number;
+        speechContent?: string;
+        speaker?: string;
+        isHighlight?: boolean;
+        audioType?: string;
+        energyLevel?: number;
+        visualQuality?: string;
+        cameraMovement?: string;
+      }>;
+    } | null;
+
+    if (!result?.scenes || result.scenes.length === 0) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `No labels found for media ${mediaId}. Run labeling first.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const { global, scenes } = result;
+
+    const chronologicalScenes = scenes.map((scene, i) => {
+      const duration = scene.endTime - scene.startTime;
+      return {
+        index: i,
+        startTime: scene.startTime,
+        endTime: scene.endTime,
+        duration,
+        description: scene.description,
+        score: scene.score ?? 0,
+        isHighlight: scene.isHighlight ?? false,
+        filteredOut: duration < min || duration > max,
+      };
+    });
+
+    const eligible = scenes
+      .map((scene, i) => ({ scene, index: i }))
+      .filter((entry) => {
+        const duration =
+          entry.scene.endTime - entry.scene.startTime;
+        return duration >= min && duration <= max;
+      });
+
+    eligible.sort((a, b) => {
+      const aHighlight = a.scene.isHighlight ? 1 : 0;
+      const bHighlight = b.scene.isHighlight ? 1 : 0;
+      if (bHighlight !== aHighlight) return bHighlight - aHighlight;
+      return (b.scene.score ?? 0) - (a.scene.score ?? 0);
+    });
+
+    const rankedScenes = eligible.map((entry, rank) => {
+      const { scene, index } = entry;
+      const prev = index > 0 ? scenes[index - 1] : null;
+      const next =
+        index < scenes.length - 1 ? scenes[index + 1] : null;
+      return {
+        rank: rank + 1,
+        index,
+        startTime: scene.startTime,
+        endTime: scene.endTime,
+        duration: scene.endTime - scene.startTime,
+        timeRange: `${fmtTime(scene.startTime)} - ${fmtTime(scene.endTime)}`,
+        description: scene.description,
+        category: scene.category ?? "",
+        score: scene.score ?? 0,
+        isHighlight: scene.isHighlight ?? false,
+        audioType: scene.audioType,
+        energyLevel: scene.energyLevel,
+        visualQuality: scene.visualQuality,
+        cameraMovement: scene.cameraMovement,
+        speechContent: scene.speechContent,
+        speaker: scene.speaker,
+        context: {
+          prevScene: prev
+            ? {
+                timeRange: `${fmtTime(prev.startTime)} - ${fmtTime(prev.endTime)}`,
+                description: prev.description,
+              }
+            : null,
+          nextScene: next
+            ? {
+                timeRange: `${fmtTime(next.startTime)} - ${fmtTime(next.endTime)}`,
+                description: next.description,
+              }
+            : null,
+        },
+      };
+    });
+
+    const scores = scenes.map((s) => s.score ?? 0);
+    const highlightCount = scenes.filter(
+      (s) => s.isHighlight
+    ).length;
+    const averageScore =
+      scores.length > 0
+        ? scores.reduce((a, b) => a + b, 0) / scores.length
+        : 0;
+
+    const output = {
+      mediaId,
+      purpose: clipPurpose,
+      global: {
+        ...(global ?? {
+          duration: 0,
+          resolution: "",
+          fps: 0,
+          summary: "",
+          overallTone: "",
+          speakers: [],
+        }),
+        totalScenes: scenes.length,
+        highlightCount,
+        averageScore: Math.round(averageScore * 100) / 100,
+      },
+      rankedScenes,
+      chronologicalScenes,
+      instructions:
+        "You are given labeled scenes for a video. Select 3-5 best clip candidates from rankedScenes. For each, explain why it works as a clip and suggest trim points if needed. Consider narrative flow using adjacent scene context.",
+    };
+
+    return {
+      content: [
+        { type: "text", text: JSON.stringify(output, null, 2) },
+      ],
+    };
+  }
+);
+
+function fmtTime(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = Math.floor(seconds % 60);
@@ -608,7 +781,7 @@ server.tool(
     ];
 
     for (const scene of scenes) {
-      const timeRange = `${formatTime(scene.startTime)}〜${formatTime(scene.endTime)}`;
+      const timeRange = `${fmtTime(scene.startTime)}〜${fmtTime(scene.endTime)}`;
       const title = scene.category || "シーン";
       lines.push(`## ${timeRange} — ${title}`);
       lines.push("");
