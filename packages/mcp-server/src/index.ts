@@ -456,32 +456,6 @@ server.tool(
 );
 
 server.tool(
-  "get_video_frames",
-  "Extract frames from a video at regular intervals as base64 JPEG images. Use for AI vision analysis.",
-  {
-    mediaId: z.string().describe("ID of the media asset to extract frames from"),
-    interval: z.number().optional().describe("Interval in seconds between frames (default: 5)"),
-  },
-  async ({ mediaId, interval }) => {
-    const data = await sendCommand("get_video_frames", { mediaId, interval }, 300000) as {
-      frames: Array<{ time: number; image: string }>;
-      mediaId: string;
-      interval: number;
-    };
-
-    const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
-    content.push({ type: "text", text: `Extracted ${data.frames.length} frames from media ${mediaId} at ${data.interval}s intervals` });
-
-    for (const frame of data.frames) {
-      content.push({ type: "text", text: `--- Frame at ${frame.time.toFixed(1)}s ---` });
-      content.push({ type: "image", data: frame.image, mimeType: "image/jpeg" });
-    }
-
-    return { content };
-  },
-);
-
-server.tool(
   "transcribe_local",
   "Transcribe the timeline audio using local Whisper model in the browser. Returns text with timestamped segments.",
   {
@@ -510,48 +484,6 @@ server.tool(
 );
 
 server.tool(
-  "save_video_labels",
-  "Save AI-generated labels (metadata) for a video. Labels include scene-level descriptions, audio type, energy level, etc.",
-  {
-    labels: z
-      .object({
-        mediaId: z.string().describe("ID of the media asset"),
-        version: z.number().describe("Label schema version"),
-        createdAt: z.string().describe("ISO timestamp"),
-        global: z.object({
-          duration: z.number(),
-          resolution: z.string(),
-          fps: z.number(),
-          summary: z.string(),
-          overallTone: z.string(),
-          speakers: z.array(z.string()),
-        }).describe("Global video metadata"),
-        scenes: z.array(z.object({
-          startTime: z.number(),
-          endTime: z.number(),
-          description: z.string(),
-          category: z.string().optional(),
-          score: z.number().optional(),
-          audioType: z.enum(["speech", "music", "silence", "noise", "mixed"]).optional(),
-          speechContent: z.string().optional(),
-          speaker: z.string().optional(),
-          visualQuality: z.enum(["good", "fair", "poor"]).optional(),
-          cameraMovement: z.enum(["static", "pan", "zoom", "handheld"]).optional(),
-          energyLevel: z.number().min(1).max(5).optional(),
-          isHighlight: z.boolean(),
-        })).describe("Per-scene labels"),
-      })
-      .describe("The VideoLabels object to save"),
-  },
-  async ({ labels }) => {
-    const data = await sendCommand("save_video_labels", {
-      labels,
-    });
-    return { content: [{ type: "text", text: JSON.stringify(data) }] };
-  },
-);
-
-server.tool(
   "get_video_labels",
   "Retrieve previously saved labels for a video",
   {
@@ -567,7 +499,7 @@ server.tool(
 );
 
 server.tool(
-	"analyze_video_gemini",
+	"create_video_labels",
 	"Analyze video using Google Gemini API. Uploads video to Gemini, performs scene-by-scene labeling with structured output, and saves labels.",
 	{
 		mediaId: z.string().describe("ID of the media asset to label"),
