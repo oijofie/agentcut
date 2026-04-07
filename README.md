@@ -1,121 +1,77 @@
-<table width="100%">
-  <tr>
-    <td align="left" width="120">
-      <img src="apps/web/public/logos/opencut/1k/logo-white-black.png" alt="OpenCut Logo" width="100" />
-    </td>
-    <td align="right">
-      <h1>OpenCut</span></h1>
-      <h3 style="margin-top: -10px;">A free, open-source video editor for web, desktop, and mobile.</h3>
-    </td>
-  </tr>
-</table>
+## agentcut
+自然言語で操作できるブラウザベースの動画編集エディタ。動画内容の分析、文字起こし、シーン検出、切り抜き生成などができる。
 
-## Sponsors
-
-Thanks to [Vercel](https://vercel.com?utm_source=github-opencut&utm_campaign=oss) and [fal.ai](https://fal.ai?utm_source=github-opencut&utm_campaign=oss) for their support of open-source software.
-
-<a href="https://vercel.com/oss">
-  <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge.svg" />
-</a>
-
-<a href="https://fal.ai">
-  <img alt="Powered by fal.ai" src="https://img.shields.io/badge/Powered%20by-fal.ai-000000?style=flat&logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEyIDJMMTMuMDkgOC4yNkwyMCAxMEwxMy4wOSAxNS43NEwxMiAyMkwxMC45MSAxNS43NEw0IDEwTDEwLjkxIDguMjZMMTIgMloiIGZpbGw9IndoaXRlIi8+Cjwvc3ZnPgo=" />
-</a>
-
-## Why?
-
-- **Privacy**: Your videos stay on your device
-- **Free features**: Most basic CapCut features are now paywalled 
-- **Simple**: People want editors that are easy to use - CapCut proved that
-
-## Features
-
-- Timeline-based editing
-- Multi-track support
-- Real-time preview
-- No watermarks or subscriptions
-- Analytics provided by [Databuddy](https://www.databuddy.cc?utm_source=opencut), 100% Anonymized & Non-invasive.
-- Blog powered by [Marble](https://marblecms.com?utm_source=opencut), Headless CMS.
-
-## Project Structure
-
-- `apps/web/` – Main Next.js web application
-- `src/components/` – UI and editor components
-- `src/hooks/` – Custom React hooks
-- `src/lib/` – Utility and API logic
-- `src/stores/` – State management (Zustand, etc.)
-- `src/types/` – TypeScript types
-
-## Getting Started
+## Setup
 
 ### Prerequisites
 
-- [Bun](https://bun.sh/docs/installation)
-- [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/)
+- [Bun](https://bun.sh/docs/installation) (v1.2.18+)
 
-> **Note:** Docker is optional but recommended for running the local database and Redis. If you only want to work on frontend features, you can skip it.
-
-### Setup
-
-1. Fork and clone the repository
-
-2. Copy the environment file:
-
-   ```bash
-   # Unix/Linux/Mac
-   cp apps/web/.env.example apps/web/.env.local
-
-   # Windows PowerShell
-   Copy-Item apps/web/.env.example apps/web/.env.local
-   ```
-
-3. Start the database and Redis:
-
-   ```bash
-   docker compose up -d db redis serverless-redis-http
-   ```
-
-4. Install dependencies and start the dev server:
-
-   ```bash
-   bun install
-   bun dev:web
-   ```
-
-The application will be available at [http://localhost:3000](http://localhost:3000).
-
-The `.env.example` has sensible defaults that match the Docker Compose config — it should work out of the box.
-
-### Self-Hosting with Docker
-
-To run everything (including a production build of the app) in Docker:
+### 1. Install & Environment
 
 ```bash
-docker compose up -d
+bun install
+cp packages/mcp-server/.env.example packages/mcp-server/.env
 ```
 
-The app will be available at [http://localhost:3100](http://localhost:3100).
+`packages/mcp-server/.env` を開いて、APIキーを設定してください:
 
-## Contributing
+```
+OPENAI_API_KEY=sk-...
+GEMINI_API_KEY=...
+```
 
-We welcome contributions! While we're actively developing and refactoring certain areas, there are plenty of opportunities to contribute effectively.
+### 2. Start Dev Server
 
-**🎯 Focus areas:** Timeline functionality, project management, performance, bug fixes, and UI improvements outside the preview panel.
+3つのプロセスをそれぞれ別ターミナルで起動します:
 
-**⚠️ Avoid for now:** Preview panel enhancements (fonts, stickers, effects) and export functionality - we're refactoring these with a new binary rendering approach.
+```bash
+bun dev:web          # Web app (port 3000)
+bun dev:ws-bridge    # WebSocket bridge (port 3001)
+bun dev:mcp          # MCP server
+```
 
-See our [Contributing Guide](.github/CONTRIBUTING.md) for detailed setup instructions, development guidelines, and complete focus area guidance.
+http://localhost:3000 でエディタが開きます。
 
-**Quick start for contributors:**
+> Note: `ws-bridge` と `mcp` は AI エージェント連携に必要です。エディタ単体で使う場合は `bun dev:web` だけで OK。
 
-- Fork the repo and clone locally
-- Follow the setup instructions in CONTRIBUTING.md
-- Create a feature branch and submit a PR
 
-## License
+## How to Use
 
-[MIT LICENSE](LICENSE)
+### 1. 動画内容の分析
+`/analyze` コマンドで動画のシーン分析・文字起こし・Markdown出力を一括実行する。
 
----
+### 2. 切り抜き箇所の特定
+分析結果から切り抜き候補を推薦する。
 
-![Star History Chart](https://api.star-history.com/svg?repos=opencut-app/opencut&type=Date)
+### 3. 切り抜きの実施
+切り抜き動画用に、縦型変換、テロップ・画像付与などを自然言語で指示する。
+
+## MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `get_timeline` | タイムラインの状態を取得 |
+| `split` | 指定時間でクリップを分割 |
+| `remove_range` | 指定範囲のコンテンツを削除 |
+| `trim` | イン/アウト点を調整 |
+| `undo` / `redo` | 取り消し/やり直し |
+| `seek` | 再生位置を移動 |
+| `play` / `pause` | 再生/一時停止 |
+| `add_text` | テロップを追加 |
+| `add_image` | 画像オーバーレイを追加 |
+| `add_effect` | エフェクトを追加 |
+| `set_canvas_size` | キャンバスサイズを変更 |
+| `list_media` | メディア一覧を取得 |
+| `transcribe_api` | OpenAI Whisperで文字起こし |
+| `transcribe_local` | ローカルWhisperで文字起こし |
+| `detect_scenes` | シーン変化を検出 |
+| `create_video_labels` | Geminiで動画を分析・ラベリング |
+| `get_video_labels` | 保存済みラベルを取得 |
+| `clip_recommendation` | 切り抜き候補を推薦 |
+| `clip_create` | 指定範囲でクリップを作成 |
+| `generate_scene_md` | シーン分析をMarkdown出力 |
+
+
+## Acknowledgement
+Built on [OpenCut](https://github.com/OpenCut/opencut)(MIT Licence).
