@@ -590,8 +590,8 @@ server.tool(
 						items: {
 							type: "object",
 							properties: {
-								startTime: { type: "number" },
-								endTime: { type: "number" },
+								startTime: { type: "string" },
+								endTime: { type: "string" },
 								description: { type: "string" },
 								category: { type: "string" },
 								score: { type: "number" },
@@ -613,8 +613,9 @@ server.tool(
 			const prompt = `この動画の内容を解析し、シーンごとに分割してラベリングしてください。
 
 ルール:
-- 動画全体を隙間なくシーンに分割してください（最初のシーンのstartTime=0、最後のシーンのendTime=動画の終了時刻）
-- startTime, endTimeは秒数（小数点OK）で返してください
+- 動画全体を隙間なくシーンに分割してください（最初のシーンのstartTime="00:00:00"、最後のシーンのendTime=動画の終了時刻）
+- 各シーンの長さは30秒〜1分30秒を目安にしてください。短すぎる（30秒未満）シーンや長すぎる（2分超）シーンは避けてください
+- startTime, endTimeはHH:MM:SS形式で返してください（例: "00:01:30"）
 - descriptionに、そのシーンの具体的な内容を詳しく記述してください（誰が何をしているか、何を話しているか）
 - categoryに、内容のカテゴリを記述してください（例: リアクション、名言、議論、ハプニング、雑談、企画説明 等）
 - scoreに、切り抜き動画としての面白さ・バズりやすさを1-10で評価してください（10が最も面白い）
@@ -651,6 +652,17 @@ server.tool(
 			log("Gemini response received");
 			const parsed = JSON.parse(response.text!);
 			log(`parsed: ${parsed.scenes?.length ?? 0} scenes`);
+
+			// Convert HH:MM:SS to seconds
+			const parseHMS = (hms: string): number => {
+				const [h, m, s] = hms.split(":").map(Number);
+				return h * 3600 + m * 60 + s;
+			};
+			parsed.scenes = parsed.scenes.map((s: Record<string, unknown>) => ({
+				...s,
+				startTime: parseHMS(s.startTime as string),
+				endTime: parseHMS(s.endTime as string),
+			}));
 
 			const labels = {
 				mediaId,
