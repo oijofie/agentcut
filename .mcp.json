@@ -3,6 +3,7 @@
     "opencut": {
       "command": "bun",
       "args": ["run", "packages/mcp-server/src/index.ts"],
+      "timeout": 600,
       "env": {
         "PATH": "/Users/yamauchirintarou/.bun/bin:/usr/local/bin:/usr/bin:/bin"
       }

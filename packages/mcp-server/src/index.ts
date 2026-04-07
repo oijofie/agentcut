@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import WebSocket from "ws";
 import OpenAI from "openai";
+import { GoogleGenAI } from "@google/genai";
 import { readFileSync, writeFileSync, unlinkSync, mkdtempSync, mkdirSync, existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { resolve, dirname, join } from "node:path";
@@ -273,28 +274,82 @@ server.tool(
 );
 
 server.tool(
-  "transcribe",
-  "Transcribe the timeline audio using OpenAI Whisper API. Returns word-level timestamps.",
+  "add_image",
+  "Add an image (from the project's media assets) as an overlay on the timeline",
+  {
+    mediaId: z.string().describe("ID of the image asset"),
+    startTime: z.coerce.number().optional().describe("Start time on timeline in seconds (default: 0)"),
+    duration: z.coerce.number().optional().describe("Duration in seconds (default: full timeline duration)"),
+    x: z.coerce.number().optional().describe("X offset from center in pixels (default: 0)"),
+    y: z.coerce.number().optional().describe("Y offset from center in pixels (default: 0)"),
+    opacity: z.coerce.number().optional().describe("Opacity 0-1 (default: 1)"),
+    scale: z.coerce.number().optional().describe("Scale factor (default: 1.0, e.g. 0.5 = half size, 2.0 = double)"),
+  },
+  async ({ mediaId, startTime, duration, x, y, opacity, scale }) => {
+    const data = await sendCommand("add_image", { mediaId, startTime, duration, x, y, opacity, scale });
+    return { content: [{ type: "text", text: JSON.stringify(data) }] };
+  },
+);
+
+server.tool(
+  "transcribe_api",
+  "Transcribe audio using OpenAI Whisper API. Returns word-level timestamps. Supports local file path (recommended) or browser audio extraction.",
   {
     language: z.string().optional().describe("Language code (e.g. 'ja', 'en'). Auto-detected if omitted."),
+    file_path: z.string().optional().describe("Absolute path to a local video/audio file. If omitted, extracts audio from the current timeline via browser."),
   },
-  async ({ language }) => {
+  async ({ language, file_path }) => {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
       return { content: [{ type: "text", text: "Error: OPENAI_API_KEY environment variable is not set" }] };
     }
 
-    // Extract audio from browser (60s timeout for long timelines)
-    const result = await sendCommand("extract_audio", {}, 180000) as { audio: string; duration: number };
+    let audioFile: File;
+    let duration: number;
 
-    // Decode base64 WAV
-    const wavBuffer = Buffer.from(result.audio, "base64");
-    const wavFile = new File([wavBuffer], "audio.wav", { type: "audio/wav" });
+    if (file_path) {
+      // Local file: extract mp3 via ffmpeg
+      if (!existsSync(file_path)) {
+        return { content: [{ type: "text", text: `File not found: ${file_path}` }], isError: true };
+      }
+
+      const tmpDir = mkdtempSync(join(tmpdir(), "transcribe-"));
+      const mp3Path = join(tmpDir, "audio.mp3");
+
+      // Get duration
+      duration = await new Promise<number>((res, rej) => {
+        execFile(FFPROBE, ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file_path], (err, stdout) => {
+          if (err) return rej(err);
+          res(Number.parseFloat(stdout.trim()));
+        });
+      });
+
+      // Extract audio as mp3 (mono, low bitrate to stay under Whisper 25MB limit)
+      await new Promise<void>((res, rej) => {
+        execFile(FFMPEG, ["-i", file_path, "-vn", "-acodec", "libmp3lame", "-q:a", "8", "-ac", "1", "-y", mp3Path], (err) => {
+          if (err) return rej(err);
+          res();
+        });
+      });
+
+      const mp3Buffer = readFileSync(mp3Path);
+      audioFile = new File([mp3Buffer], "audio.mp3", { type: "audio/mpeg" });
+
+      // Cleanup
+      try { unlinkSync(mp3Path); } catch {}
+      try { unlinkSync(tmpDir); } catch {}
+    } else {
+      // Browser extraction fallback
+      const result = await sendCommand("extract_audio", {}, 180000) as { audio: string; duration: number };
+      duration = result.duration;
+      const wavBuffer = Buffer.from(result.audio, "base64");
+      audioFile = new File([wavBuffer], "audio.wav", { type: "audio/wav" });
+    }
 
     // Call Whisper API
     const openai = new OpenAI({ apiKey });
     const transcription = await openai.audio.transcriptions.create({
-      file: wavFile,
+      file: audioFile,
       model: "whisper-1",
       response_format: "verbose_json",
       timestamp_granularities: ["word"],
@@ -303,15 +358,25 @@ server.tool(
 
     const words = (transcription as unknown as { words?: Array<{ word: string; start: number; end: number }> }).words ?? [];
 
+    const transcriptData = {
+      text: transcription.text,
+      language: transcription.language,
+      duration,
+      words,
+      createdAt: new Date().toISOString(),
+      source: "whisper-api",
+    };
+
+    // Save to JSON file
+    const outDir = resolve(__dirname, "../../../output");
+    mkdirSync(outDir, { recursive: true });
+    const outPath = join(outDir, `transcript-${Date.now()}.json`);
+    writeFileSync(outPath, JSON.stringify(transcriptData, null, 2));
+
     return {
       content: [{
         type: "text",
-        text: JSON.stringify({
-          text: transcription.text,
-          language: transcription.language,
-          duration: result.duration,
-          words,
-        }, null, 2),
+        text: JSON.stringify({ ...transcriptData, savedTo: outPath }, null, 2),
       }],
     };
   },
@@ -437,34 +502,8 @@ server.tool(
 );
 
 server.tool(
-  "get_video_frames",
-  "Extract frames from a video at regular intervals as base64 JPEG images. Use for AI vision analysis.",
-  {
-    mediaId: z.string().describe("ID of the media asset to extract frames from"),
-    interval: z.number().optional().describe("Interval in seconds between frames (default: 5)"),
-  },
-  async ({ mediaId, interval }) => {
-    const data = await sendCommand("get_video_frames", { mediaId, interval }, 300000) as {
-      frames: Array<{ time: number; image: string }>;
-      mediaId: string;
-      interval: number;
-    };
-
-    const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
-    content.push({ type: "text", text: `Extracted ${data.frames.length} frames from media ${mediaId} at ${data.interval}s intervals` });
-
-    for (const frame of data.frames) {
-      content.push({ type: "text", text: `--- Frame at ${frame.time.toFixed(1)}s ---` });
-      content.push({ type: "image", data: frame.image, mimeType: "image/jpeg" });
-    }
-
-    return { content };
-  },
-);
-
-server.tool(
-  "transcribe_video",
-  "Transcribe the timeline audio using Whisper. Returns text with timestamped segments.",
+  "transcribe_local",
+  "Transcribe the timeline audio using local Whisper model in the browser. Returns text with timestamped segments.",
   {
     language: z
       .enum(["auto", "en", "es", "it", "fr", "de", "pt", "ru", "ja", "zh"])
@@ -485,50 +524,22 @@ server.tool(
       "transcribe_video",
       { language, model },
       300000,
-    );
-    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
-  },
-);
+    ) as Record<string, unknown>;
 
-server.tool(
-  "save_video_labels",
-  "Save AI-generated labels (metadata) for a video. Labels include scene-level descriptions, audio type, energy level, etc.",
-  {
-    labels: z
-      .object({
-        mediaId: z.string().describe("ID of the media asset"),
-        version: z.number().describe("Label schema version"),
-        createdAt: z.string().describe("ISO timestamp"),
-        global: z.object({
-          duration: z.number(),
-          resolution: z.string(),
-          fps: z.number(),
-          summary: z.string(),
-          overallTone: z.string(),
-          speakers: z.array(z.string()),
-        }).describe("Global video metadata"),
-        scenes: z.array(z.object({
-          startTime: z.number(),
-          endTime: z.number(),
-          description: z.string(),
-          category: z.string().optional(),
-          score: z.number().optional(),
-          audioType: z.enum(["speech", "music", "silence", "noise", "mixed"]).optional(),
-          speechContent: z.string().optional(),
-          speaker: z.string().optional(),
-          visualQuality: z.enum(["good", "fair", "poor"]).optional(),
-          cameraMovement: z.enum(["static", "pan", "zoom", "handheld"]).optional(),
-          energyLevel: z.number().min(1).max(5).optional(),
-          isHighlight: z.boolean(),
-        })).describe("Per-scene labels"),
-      })
-      .describe("The VideoLabels object to save"),
-  },
-  async ({ labels }) => {
-    const data = await sendCommand("save_video_labels", {
-      labels,
-    });
-    return { content: [{ type: "text", text: JSON.stringify(data) }] };
+    const transcriptData = {
+      ...data,
+      createdAt: new Date().toISOString(),
+      source: "whisper-local",
+      model: model ?? "whisper-small",
+    };
+
+    // Save to JSON file
+    const outDir = resolve(__dirname, "../../../output");
+    mkdirSync(outDir, { recursive: true });
+    const outPath = join(outDir, `transcript-${Date.now()}.json`);
+    writeFileSync(outPath, JSON.stringify(transcriptData, null, 2));
+
+    return { content: [{ type: "text", text: JSON.stringify({ ...transcriptData, savedTo: outPath }, null, 2) }] };
   },
 );
 
@@ -545,6 +556,218 @@ server.tool(
     }
     return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
   },
+);
+
+server.tool(
+	"create_video_labels",
+	"Analyze video using Google Gemini API. Uploads video to Gemini, performs scene-by-scene labeling with structured output, and saves labels.",
+	{
+		mediaId: z.string().describe("ID of the media asset to label"),
+		file_path: z.string().optional().describe("Absolute path to a local video file. If omitted, exports from the current timeline."),
+		model: z.string().optional().describe("Gemini model name (default: gemini-3-flash-preview)"),
+	},
+	async ({ mediaId, file_path, model }) => {
+		const apiKey = process.env.GEMINI_API_KEY;
+		if (!apiKey) {
+			return { content: [{ type: "text", text: "Error: GEMINI_API_KEY environment variable is not set" }], isError: true };
+		}
+
+		const modelName = model ?? process.env.GEMINI_MODEL!;
+		let inputFile: string;
+		let tmpDir: string | null = null;
+		let duration = 0;
+		let resolution = "";
+		let fps = 0;
+		const log = (msg: string) => console.error(`[create_video_labels] ${msg} (${(performance.now() / 1000).toFixed(1)}s)`);
+
+		log("start");
+
+		if (file_path) {
+			if (!existsSync(file_path)) {
+				return { content: [{ type: "text", text: `File not found: ${file_path}` }], isError: true };
+			}
+			inputFile = file_path;
+			log(`using file_path: ${file_path}`);
+		} else {
+			log("extracting video from browser...");
+			const result = await sendCommand("extract_video", {}, 300000) as { video: string; duration: number };
+			duration = result.duration;
+			tmpDir = mkdtempSync(join(tmpdir(), "opencut-gemini-"));
+			inputFile = join(tmpDir, "input.mp4");
+			writeFileSync(inputFile, Buffer.from(result.video, "base64"));
+			log("video extracted from browser");
+		}
+
+		try {
+			// Get video metadata via ffprobe
+			log("running ffprobe...");
+			const probeResult = await new Promise<string>((res, rej) => {
+				execFile(
+					FFPROBE,
+					["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,r_frame_rate,duration", "-show_entries", "format=duration", "-of", "json", inputFile],
+					(err, stdout) => err ? rej(new Error(`ffprobe failed: ${err.message}`)) : res(stdout),
+				);
+			});
+			const probe = JSON.parse(probeResult);
+			const stream = probe.streams?.[0];
+			if (stream) {
+				resolution = `${stream.width}x${stream.height}`;
+				const [num, den] = (stream.r_frame_rate ?? "0/1").split("/");
+				fps = Math.round(Number(num) / Number(den));
+			}
+			if (!duration) {
+				duration = Number.parseFloat(stream?.duration ?? probe.format?.duration ?? "0");
+			}
+			log(`ffprobe done: ${resolution}, ${fps}fps, ${duration.toFixed(1)}s`);
+
+			// Upload to Gemini File API
+			log("uploading to Gemini...");
+			const genai = new GoogleGenAI({ apiKey });
+			const uploaded = await genai.files.upload({ file: inputFile, config: { mimeType: "video/mp4" } });
+			let file = uploaded;
+			log(`upload complete, state=${uploaded.state}`);
+			let pollCount = 0;
+			while (file.state === "PROCESSING") {
+				if (++pollCount > 120) throw new Error("Gemini file processing timed out (10 min)");
+				await new Promise((r) => setTimeout(r, 5000));
+				file = await genai.files.get({ name: file.name! });
+				if (pollCount % 6 === 0) log(`still processing... (poll #${pollCount})`);
+			}
+			if (file.state !== "ACTIVE") {
+				throw new Error(`Gemini file upload failed: state=${file.state}`);
+			}
+			log("file active, calling Gemini model...");
+
+			// Call Gemini with structured output
+			const labelsSchema = {
+				type: "object",
+				properties: {
+					summary: { type: "string" },
+					overallTone: { type: "string" },
+					speakers: { type: "array", items: { type: "string" } },
+					scenes: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								startTime: { type: "string" },
+								endTime: { type: "string" },
+								description: { type: "string" },
+								category: { type: "string" },
+								score: { type: "number" },
+								audioType: { type: "string", enum: ["speech", "music", "silence", "noise", "mixed"] },
+								speechContent: { type: "string" },
+								speaker: { type: "string" },
+								visualQuality: { type: "string", enum: ["good", "fair", "poor"] },
+								cameraMovement: { type: "string", enum: ["static", "pan", "zoom", "handheld"] },
+								energyLevel: { type: "number" },
+								isHighlight: { type: "boolean" },
+							},
+							required: ["startTime", "endTime", "description", "audioType", "visualQuality", "cameraMovement", "energyLevel", "isHighlight"],
+						},
+					},
+				},
+				required: ["summary", "overallTone", "speakers", "scenes"],
+			};
+
+			const prompt = `この動画の内容を解析し、シーンごとに分割してラベリングしてください。
+
+ルール:
+- 動画全体を隙間なくシーンに分割してください（最初のシーンのstartTime="00:00:00"、最後のシーンのendTime=動画の終了時刻）
+- 各シーンの長さは30秒〜1分30秒を目安にしてください。短すぎる（30秒未満）シーンや長すぎる（2分超）シーンは避けてください
+- startTime, endTimeはHH:MM:SS形式で返してください（例: "00:01:30"）
+- descriptionに、そのシーンの具体的な内容を詳しく記述してください（誰が何をしているか、何を話しているか）
+- categoryに、内容のカテゴリを記述してください（例: リアクション、名言、議論、ハプニング、雑談、企画説明 等）
+- scoreに、切り抜き動画としての面白さ・バズりやすさを1-10で評価してください（10が最も面白い）
+- audioTypeに、音声の種類を分類してください
+- speechContentに、発言内容を書き起こしてください（なければ空文字列）
+- speakerに、話者を特定してください（なければ空文字列）
+- visualQualityに、映像品質を評価してください
+- cameraMovementに、カメラの動きを分類してください
+- energyLevelに、シーンのエネルギーレベルを1-5で評価してください
+- isHighlightに、特に面白い・注目すべきシーンかどうかをtrue/falseで返してください
+- summaryに、動画全体の概要を記述してください
+- overallToneに、動画全体のトーンを記述してください
+- speakersに、動画に登場する話者の一覧を返してください`;
+
+			const response = await genai.models.generateContent({
+				model: modelName,
+				contents: [
+					{
+						role: "user",
+						parts: [
+							{ fileData: { fileUri: file.uri!, mimeType: "video/mp4" } },
+							{ text: prompt },
+						],
+					},
+				],
+				config: {
+					temperature: 0.1,
+					maxOutputTokens: 65536,
+					responseMimeType: "application/json",
+					responseSchema: labelsSchema,
+				},
+			});
+
+			log("Gemini response received");
+			const parsed = JSON.parse(response.text!);
+			log(`parsed: ${parsed.scenes?.length ?? 0} scenes`);
+
+			// Convert HH:MM:SS to seconds
+			const parseHMS = (hms: string): number => {
+				const [h, m, s] = hms.split(":").map(Number);
+				return h * 3600 + m * 60 + s;
+			};
+			parsed.scenes = parsed.scenes.map((s: Record<string, unknown>) => ({
+				...s,
+				startTime: parseHMS(s.startTime as string),
+				endTime: parseHMS(s.endTime as string),
+			}));
+
+			const labels = {
+				mediaId,
+				version: 1,
+				createdAt: new Date().toISOString(),
+				global: {
+					duration,
+					resolution,
+					fps,
+					summary: parsed.summary,
+					overallTone: parsed.overallTone,
+					speakers: parsed.speakers,
+				},
+				scenes: parsed.scenes,
+			};
+
+			// Save via WebSocket
+			log("saving labels...");
+			await sendCommand("save_video_labels", { labels });
+
+			// Cleanup Gemini file
+			await genai.files.delete({ name: file.name! }).catch(() => {});
+
+			log("done!");
+			return {
+				content: [{
+					type: "text",
+					text: JSON.stringify({
+						success: true,
+						mediaId,
+						model: modelName,
+						sceneCount: parsed.scenes.length,
+						duration,
+						resolution,
+						summary: parsed.summary,
+					}, null, 2),
+				}],
+			};
+		} finally {
+			if (tmpDir) {
+				try { unlinkSync(join(tmpDir, "input.mp4")); } catch {}
+				try { unlinkSync(tmpDir); } catch {}
+			}
+		}
+	},
 );
 
 server.tool(
@@ -718,6 +941,32 @@ server.tool(
       ],
     };
   }
+);
+
+server.tool(
+	"clip_create",
+	"Split the timeline at the start and end of a scene to create a clip boundary (razor cut). Does not remove anything.",
+	{
+		startTime: z.number().describe("Start time of the clip in seconds"),
+		endTime: z.number().describe("End time of the clip in seconds"),
+	},
+	async ({ startTime, endTime }) => {
+		const startResult = await sendCommand("split", { time: startTime });
+		const endResult = await sendCommand("split", { time: endTime });
+		return {
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						splits: [
+							{ time: startTime, result: startResult },
+							{ time: endTime, result: endResult },
+						],
+					}),
+				},
+			],
+		};
+	}
 );
 
 function fmtTime(seconds: number): string {

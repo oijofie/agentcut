@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { EditorCore } from "@/core";
-import { getElementsAtTime, buildTextElement } from "@/lib/timeline";
+import { getElementsAtTime, buildTextElement, buildImageElement } from "@/lib/timeline";
 import { hasEffect, buildDefaultEffectInstance } from "@/lib/effects";
 import { extractTimelineAudio } from "@/lib/media/mediabunny";
 import { storageService } from "@/services/storage/service";
@@ -309,7 +309,7 @@ async function handleCommand(cmd: WsCommand): Promise<WsResponse> {
         const textElement = buildTextElement({
           raw: {
             content,
-            fontSize: (params?.fontSize as number) ?? 8,
+            fontSize: (params?.fontSize as number) ?? 2,
             color: (params?.color as string) ?? "#ffffff",
             transform: {
               scale: 1,
@@ -320,6 +320,7 @@ async function handleCommand(cmd: WsCommand): Promise<WsResponse> {
               rotate: 0,
             },
             duration: (params?.duration as number) ?? (totalDuration || 10),
+            background: { enabled: false, color: "transparent" },
           },
           startTime: (params?.startTime as number) ?? 0,
         });
@@ -330,6 +331,58 @@ async function handleCommand(cmd: WsCommand): Promise<WsResponse> {
         });
 
         return { id: cmd.id, ok: true, data: { content, position: positionPreset ?? "center" } };
+      }
+
+      case "add_image": {
+        const mediaId = params?.mediaId as string;
+        if (!mediaId) return { id: cmd.id, ok: false, error: "mediaId is required" };
+
+        const mediaAssets = editor.media.getAssets();
+        const asset = mediaAssets.find((a) => a.id === mediaId);
+        if (!asset || asset.type !== "image") {
+          return { id: cmd.id, ok: false, error: `Image asset not found: ${mediaId}` };
+        }
+
+        const totalDuration = editor.timeline.getTotalDuration();
+        const startTime = (params?.startTime as number) ?? 0;
+        const duration = (params?.duration as number) ?? (totalDuration || 10);
+
+        const imageElement = buildImageElement({
+          mediaId,
+          name: asset.name,
+          duration,
+          startTime,
+        });
+
+        if (params?.x !== undefined || params?.y !== undefined || params?.scale !== undefined) {
+          imageElement.transform = {
+            ...imageElement.transform,
+            scale: (params?.scale as number) ?? imageElement.transform.scale,
+            position: {
+              x: (params?.x as number) ?? 0,
+              y: (params?.y as number) ?? 0,
+            },
+          };
+        }
+
+        if (params?.opacity !== undefined) {
+          imageElement.opacity = params.opacity as number;
+        }
+
+        // Create a new track above the video track so image overlays on top
+        const tracks = editor.timeline.getTracks();
+        const videoTrackIndex = tracks.findIndex(
+          (t) => t.type === "video" && t.elements.some((e) => e.type === "video"),
+        );
+        const insertIndex = videoTrackIndex >= 0 ? videoTrackIndex : 0;
+        const newTrackId = editor.timeline.addTrack({ type: "video", index: insertIndex });
+
+        editor.timeline.insertElement({
+          element: imageElement,
+          placement: { mode: "explicit", trackId: newTrackId },
+        });
+
+        return { id: cmd.id, ok: true, data: { mediaId, assetName: asset.name, startTime, duration } };
       }
 
       case "extract_video": {
@@ -429,7 +482,7 @@ async function handleCommand(cmd: WsCommand): Promise<WsResponse> {
         return { id: cmd.id, ok: true, data: { frames, mediaId, interval } };
       }
 
-      case "transcribe_video": {
+      case "transcribe_local": {
         const language = (params?.language as TranscriptionLanguage) ?? "auto";
 
         const audioBlob = await extractTimelineAudio({
