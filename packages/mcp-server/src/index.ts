@@ -322,15 +322,25 @@ server.tool(
 
     const words = (transcription as unknown as { words?: Array<{ word: string; start: number; end: number }> }).words ?? [];
 
+    const transcriptData = {
+      text: transcription.text,
+      language: transcription.language,
+      duration: result.duration,
+      words,
+      createdAt: new Date().toISOString(),
+      source: "whisper-api",
+    };
+
+    // Save to JSON file
+    const outDir = resolve(__dirname, "../../../output");
+    mkdirSync(outDir, { recursive: true });
+    const outPath = join(outDir, `transcript-${Date.now()}.json`);
+    writeFileSync(outPath, JSON.stringify(transcriptData, null, 2));
+
     return {
       content: [{
         type: "text",
-        text: JSON.stringify({
-          text: transcription.text,
-          language: transcription.language,
-          duration: result.duration,
-          words,
-        }, null, 2),
+        text: JSON.stringify({ ...transcriptData, savedTo: outPath }, null, 2),
       }],
     };
   },
@@ -478,8 +488,22 @@ server.tool(
       "transcribe_video",
       { language, model },
       300000,
-    );
-    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    ) as Record<string, unknown>;
+
+    const transcriptData = {
+      ...data,
+      createdAt: new Date().toISOString(),
+      source: "whisper-local",
+      model: model ?? "whisper-small",
+    };
+
+    // Save to JSON file
+    const outDir = resolve(__dirname, "../../../output");
+    mkdirSync(outDir, { recursive: true });
+    const outPath = join(outDir, `transcript-${Date.now()}.json`);
+    writeFileSync(outPath, JSON.stringify(transcriptData, null, 2));
+
+    return { content: [{ type: "text", text: JSON.stringify({ ...transcriptData, savedTo: outPath }, null, 2) }] };
   },
 );
 
