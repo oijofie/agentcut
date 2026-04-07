@@ -293,27 +293,63 @@ server.tool(
 
 server.tool(
   "transcribe_api",
-  "Transcribe the timeline audio using OpenAI Whisper API. Returns word-level timestamps.",
+  "Transcribe audio using OpenAI Whisper API. Returns word-level timestamps. Supports local file path (recommended) or browser audio extraction.",
   {
     language: z.string().optional().describe("Language code (e.g. 'ja', 'en'). Auto-detected if omitted."),
+    file_path: z.string().optional().describe("Absolute path to a local video/audio file. If omitted, extracts audio from the current timeline via browser."),
   },
-  async ({ language }) => {
+  async ({ language, file_path }) => {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
       return { content: [{ type: "text", text: "Error: OPENAI_API_KEY environment variable is not set" }] };
     }
 
-    // Extract audio from browser (60s timeout for long timelines)
-    const result = await sendCommand("extract_audio", {}, 180000) as { audio: string; duration: number };
+    let audioFile: File;
+    let duration: number;
 
-    // Decode base64 WAV
-    const wavBuffer = Buffer.from(result.audio, "base64");
-    const wavFile = new File([wavBuffer], "audio.wav", { type: "audio/wav" });
+    if (file_path) {
+      // Local file: extract mp3 via ffmpeg
+      if (!existsSync(file_path)) {
+        return { content: [{ type: "text", text: `File not found: ${file_path}` }], isError: true };
+      }
+
+      const tmpDir = mkdtempSync(join(tmpdir(), "transcribe-"));
+      const mp3Path = join(tmpDir, "audio.mp3");
+
+      // Get duration
+      duration = await new Promise<number>((res, rej) => {
+        execFile(FFPROBE, ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file_path], (err, stdout) => {
+          if (err) return rej(err);
+          res(Number.parseFloat(stdout.trim()));
+        });
+      });
+
+      // Extract audio as mp3 (mono, low bitrate to stay under Whisper 25MB limit)
+      await new Promise<void>((res, rej) => {
+        execFile(FFMPEG, ["-i", file_path, "-vn", "-acodec", "libmp3lame", "-q:a", "8", "-ac", "1", "-y", mp3Path], (err) => {
+          if (err) return rej(err);
+          res();
+        });
+      });
+
+      const mp3Buffer = readFileSync(mp3Path);
+      audioFile = new File([mp3Buffer], "audio.mp3", { type: "audio/mpeg" });
+
+      // Cleanup
+      try { unlinkSync(mp3Path); } catch {}
+      try { unlinkSync(tmpDir); } catch {}
+    } else {
+      // Browser extraction fallback
+      const result = await sendCommand("extract_audio", {}, 180000) as { audio: string; duration: number };
+      duration = result.duration;
+      const wavBuffer = Buffer.from(result.audio, "base64");
+      audioFile = new File([wavBuffer], "audio.wav", { type: "audio/wav" });
+    }
 
     // Call Whisper API
     const openai = new OpenAI({ apiKey });
     const transcription = await openai.audio.transcriptions.create({
-      file: wavFile,
+      file: audioFile,
       model: "whisper-1",
       response_format: "verbose_json",
       timestamp_granularities: ["word"],
@@ -325,7 +361,7 @@ server.tool(
     const transcriptData = {
       text: transcription.text,
       language: transcription.language,
-      duration: result.duration,
+      duration,
       words,
       createdAt: new Date().toISOString(),
       source: "whisper-api",
