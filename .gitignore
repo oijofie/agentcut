@@ -21,5 +21,6 @@ bun.lockb
 
 # output
 /output
+docs/memo
 .conductor
 
