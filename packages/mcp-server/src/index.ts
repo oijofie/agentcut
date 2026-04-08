@@ -262,7 +262,7 @@ server.tool(
     position: z.enum(["center", "top", "bottom"]).optional().describe("Preset position. 'top'/'bottom' places text on letterbox bar area. Default: center"),
     x: z.number().optional().describe("X offset from center in pixels (overrides position preset for X)"),
     y: z.number().optional().describe("Y offset from center in pixels (overrides position preset for Y)"),
-    fontSize: z.number().optional().describe("Font size (default: 15, scaled by canvas height)"),
+    fontSize: z.number().optional().describe("Font size (default: 2, scaled by canvas height)"),
     color: z.string().optional().describe("Text color hex (default: #ffffff)"),
     startTime: z.number().optional().describe("Start time on timeline in seconds (default: 0)"),
     duration: z.number().optional().describe("Duration in seconds (default: full timeline duration)"),
@@ -710,7 +710,20 @@ server.tool(
 			});
 
 			log("Gemini response received");
-			const parsed = JSON.parse(response.text!);
+			log(`response keys: ${Object.keys(response)}`);
+			log(`candidates: ${JSON.stringify(response.candidates?.map(c => ({ finishReason: c.finishReason, partsLen: c.content?.parts?.length })))}`);
+			if (!response.text) {
+				const candidates = response.candidates;
+				const candidate = candidates?.[0];
+				const reason = candidate?.finishReason ?? "unknown";
+				const parts = candidate?.content?.parts;
+				const detail = parts ? JSON.stringify(parts.slice(0, 2)) : "no parts";
+				return {
+					content: [{ type: "text", text: `Gemini returned empty response. finishReason: ${reason}, detail: ${detail}, modelUsed: ${response.modelVersion ?? "unknown"}` }],
+					isError: true,
+				};
+			}
+			const parsed = JSON.parse(response.text);
 			log(`parsed: ${parsed.scenes?.length ?? 0} scenes`);
 
 			// Convert HH:MM:SS to seconds
@@ -760,6 +773,13 @@ server.tool(
 						summary: parsed.summary,
 					}, null, 2),
 				}],
+			};
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : String(error);
+			log(`error: ${msg}`);
+			return {
+				content: [{ type: "text", text: `Error in create_video_labels: ${msg}` }],
+				isError: true,
 			};
 		} finally {
 			if (tmpDir) {
