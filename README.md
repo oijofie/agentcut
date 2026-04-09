@@ -87,4 +87,4 @@ http://localhost:3000 でエディタが開きます。
 
 
 ## Acknowledgement
-Built on [OpenCut](https://github.com/OpenCut/opencut)(MIT Licence).
+Built on [OpenCut](https://github.com/OpenCut/opencut)（MIT Licence）.
