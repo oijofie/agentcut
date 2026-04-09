@@ -21,6 +21,19 @@ OPENAI_API_KEY=sk-...
 GEMINI_API_KEY=...
 ```
 
+Claude Code で MCP サーバーを使う場合は、プロジェクトルートに `.mcp.json` を作成してください:
+
+```json
+{
+  "mcpServers": {
+    "opencut": {
+      "command": "bun",
+      "args": ["run", "packages/mcp-server/src/index.ts"]
+    }
+  }
+}
+```
+
 ### 2. Start Dev Server
 
 3つのプロセスをそれぞれ別ターミナルで起動します:
